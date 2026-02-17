@@ -21,11 +21,13 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ## Download & install (v0.2.0)
 
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.2.0).
+
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| `open-os-0.2.0.AppImage` | ~105 MB |
+| [`open-os-0.2.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.2.0/open-os-0.2.0.AppImage) | ~105 MB |
 
 ```bash
 chmod +x open-os-0.2.0.AppImage
@@ -38,7 +40,7 @@ No installation needed. Works on any Linux distro with FUSE support. To integrat
 
 | File | Size |
 |---|---|
-| `open-os-cli-0.2.0.pacman` | ~73 MB |
+| [`open-os-cli-0.2.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.2.0/open-os-cli-0.2.0.pacman) | ~73 MB |
 
 ```bash
 sudo pacman -U open-os-cli-0.2.0.pacman
