@@ -4,6 +4,10 @@ A small, local-first terminal emulator with optional AI assistance — transpare
 
 Part of **Open-OS** (https://open-os.com/): open, smart tools that make technology more interoperable.
 
+![Welcome screen and model selector](screenshot-1.png)
+
+![Inline AI mode — ask questions directly in the terminal](screenshot-2.png)
+
 ---
 
 ## What it is
