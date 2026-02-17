@@ -12,8 +12,9 @@ This runs esbuild (TypeScript bundling) followed by electron-builder. Output goe
 
 | File | Format | Description |
 |---|---|---|
-| `open-os-{version}.AppImage` | AppImage | Portable executable, works on any Linux distro |
+| `open-os-cli-{version}.AppImage` | AppImage | Portable executable, works on any Linux distro |
 | `open-os-cli-{version}.pacman` | pacman | Native Arch Linux package |
+| `open-os-cli_{version}_amd64.deb` | deb | Debian / Ubuntu package |
 
 ### Adding more targets
 
@@ -29,8 +30,8 @@ Available targets: `AppImage`, `deb`, `rpm`, `pacman`, `snap`, `flatpak`. See [e
 
 1. Bump version in `package.json`
 2. `npm run dist`
-3. Test the AppImage: `chmod +x release/open-os-*.AppImage && ./release/open-os-*.AppImage`
-4. Test the pacman: `sudo pacman -U release/open-os-cli-*.pacman && open-os`
+3. Test the AppImage: `chmod +x release/open-os-cli-*.AppImage && ./release/open-os-cli-*.AppImage`
+4. Test the pacman: `sudo pacman -U release/open-os-cli-*.pacman && open-os-cli`
 5. Create a GitHub Release, attach the binaries from `release/`
 
 ---
@@ -50,7 +51,7 @@ runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 base: org.electronjs.Electron2.BaseApp
 base-version: '24.08'
-command: open-os
+command: open-os-cli
 finish-args:
   - --share=ipc
   - --socket=x11
@@ -59,13 +60,13 @@ finish-args:
   - --share=network            # required for Ollama HTTP
   - --talk-name=org.freedesktop.Notifications
 modules:
-  - name: open-os
+  - name: open-os-cli
     buildsystem: simple
     sources:
       - type: file
-        path: release/open-os-{version}.AppImage
+        path: release/open-os-cli-{version}.AppImage
     build-commands:
-      - install -Dm755 open-os-{version}.AppImage /app/bin/open-os
+      - install -Dm755 open-os-cli-{version}.AppImage /app/bin/open-os-cli
 ```
 
 > Note: This is a simplified manifest using the pre-built AppImage. For a Flathub submission, you'll need a full build-from-source manifest. See the [Flathub submission guide](https://docs.flathub.org/docs/for-app-authors/submission/).

@@ -31,11 +31,11 @@ Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/r
 
 | File | Size |
 |---|---|
-| [`open-os-0.3.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-0.3.0.AppImage) | ~105 MB |
+| [`open-os-cli-0.3.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-cli-0.3.0.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-0.3.0.AppImage
-./open-os-0.3.0.AppImage
+chmod +x open-os-cli-0.3.0.AppImage
+./open-os-cli-0.3.0.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -53,7 +53,7 @@ sudo pacman -U open-os-cli-0.3.0.pacman
 After installing, launch with:
 
 ```bash
-open-os
+open-os-cli
 ```
 
 To uninstall:
@@ -75,7 +75,7 @@ sudo dpkg -i open-os-cli_0.3.0_amd64.deb
 After installing, launch with:
 
 ```bash
-open-os
+open-os-cli
 ```
 
 To uninstall:
