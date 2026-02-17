@@ -24,6 +24,10 @@ body {
   padding: 16px 20px;
 }
 
+/* Hide xterm.js scrollbar — scroll via mouse wheel / Shift+PgUp like standard terminals */
+.xterm-viewport::-webkit-scrollbar { display: none; }
+.xterm-viewport { scrollbar-width: none; }
+
 /* --- Hint bar: bottom strip -------------------------------- */
 
 #hint-bar {
@@ -136,7 +140,9 @@ body {
   gap: 4px;
   max-height: 180px;
   overflow-y: auto;
+  scrollbar-width: none;
 }
+#model-list::-webkit-scrollbar { display: none; }
 
 .model-btn {
   padding: 8px 12px;
@@ -218,11 +224,13 @@ body {
   font-family: monospace;
   font-size: 13px;
   overflow-y: auto;
+  scrollbar-width: none;
   white-space: pre-wrap;
   word-break: break-word;
   min-height: 60px;
   max-height: 200px;
 }
+#ai-output::-webkit-scrollbar { display: none; }
 
 /* Action buttons */
 #ai-actions {
