@@ -321,11 +321,6 @@ function setupIPC(): void {
 // 5. APP LIFECYCLE
 // ============================================================
 
-// Align Wayland app_id with the installed .desktop file and icon name
-// (without this, Electron uses package.json "name" which is "open-os-cli",
-// but the icon and .desktop are installed as "open-os")
-app.setDesktopFileName('open-os.desktop');
-
 app.whenReady().then(() => {
   createWindow();
   createPty();

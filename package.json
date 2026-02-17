@@ -29,7 +29,7 @@
   },
   "build": {
     "appId": "com.open-os.cli",
-    "productName": "open-os",
+    "productName": "open-os-cli",
     "directories": {
       "output": "release"
     },
@@ -46,7 +46,7 @@
         "deb"
       ],
       "category": "System",
-      "executableName": "open-os"
+      "executableName": "open-os-cli"
     },
     "pacman": {
       "depends": [
