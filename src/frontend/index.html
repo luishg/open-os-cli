@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>open-os cli</title>
+  <link rel="stylesheet" href="./xterm.css">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+  <!-- Terminal: takes the full window -->
+  <div id="terminal"></div>
+
+  <!-- Panel: slide-up overlay, toggled with Ctrl+Space or hint bar -->
+  <div id="ai-panel">
+    <div id="ai-header">
+      <span>open-os</span>
+      <span id="ai-model-label"></span>
+      <span id="ai-status"></span>
+      <button id="ai-close">&times;</button>
+    </div>
+
+    <!-- Setup wizard: shown when no model is configured -->
+    <div id="ai-setup" class="hidden">
+      <p id="setup-message">Loading models from Ollama...</p>
+      <div id="model-list"></div>
+    </div>
+
+    <!-- Normal query mode: shown after model is selected -->
+    <div id="ai-query" class="hidden">
+      <div id="ai-input-row">
+        <input id="ai-input" type="text" placeholder="Ask open-os anything... (Enter to send)" />
+        <button id="ai-send">Send</button>
+      </div>
+
+      <pre id="ai-output"></pre>
+
+      <div id="ai-actions" class="hidden">
+        <button data-action="insert">[I]nsert into prompt</button>
+        <button data-action="run">[A]ccept &amp; Run</button>
+        <button data-action="cancel">[C]ancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hint bar -->
+  <div id="hint-bar">Ctrl+Space &mdash; open-os inline &nbsp;|&nbsp; Click here &mdash; open-os panel</div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+  "name": "open-os-cli",
+  "version": "0.2.0",
+  "description": "Simple terminal. Smart assistance.",
+  "main": "dist/main.js",
+  "license": "MIT",
+  "homepage": "https://open-os.com",
+  "author": {
+    "name": "Open-OS",
+    "email": "hello@open-os.com"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --linux",
+    "postinstall": "electron-rebuild -f -w node-pty || true"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "build": {
+    "appId": "com.open-os.cli",
+    "productName": "open-os",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*"
+    ],
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "pacman"
+      ],
+      "category": "System",
+      "executableName": "open-os"
+    }
+  }
+}

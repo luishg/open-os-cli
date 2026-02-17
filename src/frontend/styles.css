@@ -1,0 +1,264 @@
+/* ============================================================
+   open-os cli — electric blue theme
+   ============================================================ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #1a1a2e;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Terminal: fills the window ----------------------------- */
+
+#terminal {
+  flex: 1;
+  overflow: hidden;
+  padding: 16px 20px;
+}
+
+/* --- Hint bar: bottom strip -------------------------------- */
+
+#hint-bar {
+  padding: 4px 12px;
+  background: #0a1628;
+  color: #3a5a7c;
+  font-family: monospace;
+  font-size: 12px;
+  text-align: right;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s, background 0.2s;
+}
+
+#hint-bar:hover {
+  color: #e0e0e0;
+  background: #112240;
+}
+
+#hint-bar.hidden {
+  display: none;
+}
+
+/* --- Panel: slide-up overlay from the bottom --------------- */
+
+#ai-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 45%;
+  background: #0d1b2a;
+  border-top: 2px solid #00b4d8;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  transform: translateY(100%);
+  transition: transform 0.25s ease-out;
+  pointer-events: none;
+}
+
+#ai-panel.open {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Header */
+#ai-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #0a1628;
+  color: #e0e0e0;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+#ai-header span:first-child {
+  font-weight: bold;
+  color: #00b4d8;
+}
+
+#ai-status {
+  flex: 1;
+  color: #00b4d8;
+  font-size: 12px;
+}
+
+#ai-close {
+  background: none;
+  border: none;
+  color: #3a5a7c;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  transition: color 0.2s;
+}
+
+#ai-close:hover {
+  color: #00b4d8;
+}
+
+/* --- Setup wizard ------------------------------------------ */
+
+#ai-setup {
+  padding: 12px;
+  color: #e0e0e0;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+#ai-setup.hidden {
+  display: none;
+}
+
+#ai-query.hidden {
+  display: none;
+}
+
+#setup-message {
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  color: #3a5a7c;
+}
+
+#model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.model-btn {
+  padding: 8px 12px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  border: 1px solid #112240;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.model-btn:hover {
+  border-color: #00b4d8;
+  background: #112240;
+}
+
+/* --- Model label in header --------------------------------- */
+
+#ai-model-label {
+  color: #3a5a7c;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+#ai-model-label:hover {
+  color: #00b4d8;
+}
+
+/* Input row */
+#ai-input-row {
+  display: flex;
+  padding: 8px;
+  gap: 8px;
+  border-bottom: 1px solid #112240;
+}
+
+#ai-input {
+  flex: 1;
+  padding: 6px 10px;
+  background: #1a1a2e;
+  border: 1px solid #112240;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: monospace;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#ai-input:focus {
+  border-color: #00b4d8;
+}
+
+#ai-send {
+  padding: 6px 16px;
+  background: #00b4d8;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+#ai-send:hover {
+  background: #0096c7;
+}
+
+/* Output area */
+#ai-output {
+  flex: 1;
+  padding: 10px 12px;
+  color: #7dd3fc;
+  font-family: monospace;
+  font-size: 13px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 60px;
+  max-height: 200px;
+}
+
+/* Action buttons */
+#ai-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #112240;
+}
+
+#ai-actions.hidden {
+  display: none;
+}
+
+#ai-actions button {
+  padding: 5px 14px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  border: 1px solid #112240;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+#ai-actions button:hover {
+  border-color: #00b4d8;
+  color: #fff;
+}
+
+#ai-actions button[data-action="run"] {
+  border-color: #00b4d8;
+  color: #00b4d8;
+}
+
+#ai-actions button[data-action="run"]:hover {
+  background: #00b4d8;
+  color: #fff;
+}
