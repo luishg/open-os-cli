@@ -1,6 +1,6 @@
 {
   "name": "open-os-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Simple terminal. Smart assistance.",
   "main": "dist/main.js",
   "license": "MIT",
@@ -42,10 +42,19 @@
     "linux": {
       "target": [
         "AppImage",
-        "pacman"
+        "pacman",
+        "deb"
       ],
       "category": "System",
       "executableName": "open-os"
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "libxss",
+        "libnotify"
+      ]
     }
   }
 }

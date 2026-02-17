@@ -52,6 +52,7 @@ function createWindow(): void {
     width: 960,
     height: 640,
     title: 'open-os cli',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

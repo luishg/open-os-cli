@@ -23,19 +23,19 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ---
 
-## Download & install (v0.2.0)
+## Download & install (v0.3.0)
 
-Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.2.0).
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.3.0).
 
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| [`open-os-0.2.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.2.0/open-os-0.2.0.AppImage) | ~105 MB |
+| [`open-os-0.3.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-0.3.0.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-0.2.0.AppImage
-./open-os-0.2.0.AppImage
+chmod +x open-os-0.3.0.AppImage
+./open-os-0.3.0.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -44,10 +44,10 @@ No installation needed. Works on any Linux distro with FUSE support. To integrat
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.2.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.2.0/open-os-cli-0.2.0.pacman) | ~73 MB |
+| [`open-os-cli-0.3.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-cli-0.3.0.pacman) | ~73 MB |
 
 ```bash
-sudo pacman -U open-os-cli-0.2.0.pacman
+sudo pacman -U open-os-cli-0.3.0.pacman
 ```
 
 After installing, launch with:
@@ -60,6 +60,28 @@ To uninstall:
 
 ```bash
 sudo pacman -R open-os-cli
+```
+
+### Debian / Ubuntu (.deb)
+
+| File | Size |
+|---|---|
+| [`open-os-cli_0.3.0_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-cli_0.3.0_amd64.deb) | ~73 MB |
+
+```bash
+sudo dpkg -i open-os-cli_0.3.0_amd64.deb
+```
+
+After installing, launch with:
+
+```bash
+open-os
+```
+
+To uninstall:
+
+```bash
+sudo dpkg -r open-os-cli
 ```
 
 ### Requirements
@@ -186,6 +208,9 @@ open-os-cli/
 ├── package.json          # deps, version, electron-builder config
 ├── tsconfig.json         # TypeScript config
 ├── build.mjs             # esbuild — bundles to dist/
+├── build/
+│   ├── icon.png          # App icon (1024x1024 source)
+│   └── icons/            # Generated sizes (16–512px) for hicolor theme
 ├── .gitignore
 ├── src/
 │   ├── main.ts           # Electron main: window + PTY + Ollama + config
