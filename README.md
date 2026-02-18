@@ -84,6 +84,28 @@ To uninstall:
 sudo dpkg -r open-os-cli
 ```
 
+### macOS (.dmg)
+
+| File | Size |
+|---|---|
+| [`open-os-cli-0.4.1-arm64.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.4.1/open-os-cli-0.4.1-arm64.dmg) | ~73 MB |
+
+Open the `.dmg` and drag **open-os-cli** to your Applications folder.
+
+> Note: the app is not signed with an Apple Developer certificate. On first launch, right-click → Open to bypass Gatekeeper.
+
+### Windows (.exe)
+
+| File | Size |
+|---|---|
+| [`open-os-cli.Setup.0.4.1.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.4.1/open-os-cli.Setup.0.4.1.exe) | ~78 MB |
+
+Run the installer. After installing, search for **open-os-cli** in the Start menu.
+
+> Note: the installer is not code-signed. Windows SmartScreen may show a warning — click "More info" → "Run anyway".
+
+To uninstall: Settings → Apps → open-os-cli → Uninstall.
+
 ### Requirements
 
 - **Ollama** running locally for AI features (`ollama serve`). The terminal works without it — AI features are optional.

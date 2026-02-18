@@ -26,13 +26,57 @@ Edit the `build.linux.target` array in `package.json`:
 
 Available targets: `AppImage`, `deb`, `rpm`, `pacman`, `snap`, `flatpak`. See [electron-builder Linux docs](https://www.electron.build/linux).
 
-### Release checklist
+### Release checklist (automated)
 
-1. Bump version in `package.json`
+1. Bump version in `package.json` and `README.md`
+2. Commit + push to `main`
+3. Tag and push: `git tag v{version} && git push origin v{version}`
+4. The CI workflow builds all platforms and creates the GitHub Release automatically
+
+### Release checklist (manual, Linux-only)
+
+1. Bump version in `package.json` and `README.md`
 2. `npm run dist`
 3. Test the AppImage: `chmod +x release/open-os-cli-*.AppImage && ./release/open-os-cli-*.AppImage`
 4. Test the pacman: `sudo pacman -U release/open-os-cli-*.pacman && open-os-cli`
 5. Create a GitHub Release, attach the binaries from `release/`
+
+---
+
+## CI/CD — GitHub Actions
+
+Workflow file: `.github/workflows/release.yml`
+
+### Trigger
+
+Pushing a tag matching `v*` (e.g. `git tag v0.5.0 && git push origin v0.5.0`).
+
+### Jobs
+
+**`build`** — runs 3 runners in parallel (`fail-fast: false` so one failure doesn't cancel the others):
+
+| Runner | Platform | Targets | Output |
+|---|---|---|---|
+| `ubuntu-latest` | Linux | AppImage, pacman, deb | `.AppImage`, `.pacman`, `.deb` |
+| `macos-latest` | macOS | dmg | `.dmg` (arm64) |
+| `windows-latest` | Windows | nsis | `.exe` installer |
+
+**`release`** — runs after all builds complete. Downloads all artifacts and creates a GitHub Release with `softprops/action-gh-release`.
+
+### Platform-specific build dependencies
+
+Each runner installs what it needs before `npm install`:
+
+- **Linux**: `libarchive-tools` — provides `bsdtar`, required by `fpm` to build `.pacman` packages.
+- **macOS**: Python via `actions/setup-python` — required by `node-gyp` to compile the native `node-pty` module.
+- **Windows**: `windows-build-tools` — provides MSVC build tools for `node-gyp`.
+
+### Key details
+
+- `--publish never` is passed to `electron-builder` so it doesn't try to publish to GitHub itself (the `release` job handles that separately via `softprops/action-gh-release`).
+- `GH_TOKEN` is still set in the build step environment — electron-builder uses it to download Electron binaries from GitHub (avoids rate limits), not for publishing.
+- `node-pty` is a native C++ module. It must be compiled on each target platform with the correct Electron headers. This is why cross-compilation from a single OS doesn't work reliably.
+- The `dist` npm script runs `npm run build && electron-builder` without a platform flag — electron-builder auto-detects the current OS. The workflow overrides with `--linux`, `--mac`, or `--win` per runner.
 
 ---
 
