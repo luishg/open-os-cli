@@ -23,19 +23,19 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ---
 
-## Download & install (v0.3.0)
+## Download & install (v0.4.0)
 
-Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.3.0).
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.4.0).
 
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.3.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-cli-0.3.0.AppImage) | ~105 MB |
+| [`open-os-cli-0.4.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.4.0/open-os-cli-0.4.0.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-cli-0.3.0.AppImage
-./open-os-cli-0.3.0.AppImage
+chmod +x open-os-cli-0.4.0.AppImage
+./open-os-cli-0.4.0.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -44,10 +44,10 @@ No installation needed. Works on any Linux distro with FUSE support. To integrat
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.3.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-cli-0.3.0.pacman) | ~73 MB |
+| [`open-os-cli-0.4.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.4.0/open-os-cli-0.4.0.pacman) | ~73 MB |
 
 ```bash
-sudo pacman -U open-os-cli-0.3.0.pacman
+sudo pacman -U open-os-cli-0.4.0.pacman
 ```
 
 After installing, launch with:
@@ -66,10 +66,10 @@ sudo pacman -R open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli_0.3.0_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.3.0/open-os-cli_0.3.0_amd64.deb) | ~73 MB |
+| [`open-os-cli_0.4.0_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.4.0/open-os-cli_0.4.0_amd64.deb) | ~73 MB |
 
 ```bash
-sudo dpkg -i open-os-cli_0.3.0_amd64.deb
+sudo dpkg -i open-os-cli_0.4.0_amd64.deb
 ```
 
 After installing, launch with:
@@ -133,24 +133,31 @@ npm start          # builds TypeScript + launches the app
 ### Inline mode (Ctrl+Space)
 Press **Ctrl+Space** anywhere in the terminal to enter AI mode:
 
-1. A colored `open-os >` prompt appears
-2. Type your question and press Enter
-3. The AI response streams directly in the terminal
-4. If the AI suggests commands, approval options appear:
-   - **[I]nsert** — places the command in the terminal prompt
-   - **[A]ccept & Run** — executes the command
+1. A visual separator marks the start of the AI block
+2. A colored `open-os >` prompt appears — type your question and press Enter
+3. The AI generates a response (shown after completion)
+4. If the AI suggests a **single command**, approval options appear:
+   - **[I]nsert** — places the command in the terminal prompt for editing
+   - **[R]un** — executes the command immediately
    - **[C]ancel** — discards and returns to normal mode
+5. If the AI suggests **multiple commands**, they are presented one at a time:
+   - **[R]un** — executes that command immediately, then shows the next one
+   - **[S]kip** — skips to the next command without executing
+   - **[C]ancel** — discards all remaining commands and exits
+6. A closing separator marks the end of the AI block
 
-Press Escape at any time to cancel.
+Multi-line commands (heredocs, etc.) are fully supported — the preview shows the first few lines with a "... +N more lines" indicator for longer commands.
+
+Press **Tab** to autocomplete file and directory names while typing your prompt — it works like shell tab-completion, resolving paths relative to your shell's current directory. Press **Escape** at any time to cancel. Use **Arrow Up/Down** to navigate through your previous AI prompts (history is kept for the session, works like shell history).
 
 ### Panel mode (click hint bar)
 Click the hint bar at the bottom of the window for an overlay panel:
 
 1. Type your question in the input field
-2. The AI response streams in the panel
+2. The AI generates a response (shown after completion)
 3. Action buttons appear for suggested commands:
    - **Insert** — writes the command to the terminal
-   - **Accept & Run** — executes it
+   - **Run** — executes it
    - **Cancel** — closes the panel
 
 ### Context
@@ -182,18 +189,18 @@ User types question → Enter
         │
         ▼
    [renderer.ts] ───IPC──► [main.ts] ───HTTP──► Ollama :11434
-                                │                     │
+                                │                     │  (format: json)
                             IPC (ai:chunk) ◄──────────┘
                                 │                (streaming)
                                 ▼
-                    Response displayed (inline or panel)
-                    Approval options appear
+                    JSON parsed: {text, commands[]}
+                    Text displayed, commands shown for review
                                 │
-                    ┌───────────┼───────────┐
-                    ▼           ▼           ▼
-                 [Insert]   [Run]      [Cancel]
-                 pty.write  pty.write    close
-                 (no \r)   (+ \r)
+              ┌─────────────────┼─────────────────┐
+              ▼                 ▼                  ▼
+      Single command    Multiple commands       No commands
+     [I]nsert [R]un    Sequential review:       exit mode
+     [C]ancel          [R]un [S]kip [C]ancel
 ```
 
 ### Key design rule
@@ -234,7 +241,7 @@ open-os-cli/
 | System info for prompt | `main.ts` — `buildSystemPrompt()` |
 | IPC bridge | `preload.ts` — `contextBridge` |
 | Terminal rendering | `renderer.ts` — xterm.js setup |
-| Inline AI mode | `renderer.ts` — state machine (idle/input/streaming/approval) |
+| Inline AI mode | `renderer.ts` — state machine (idle/input/streaming/approval), prompt history, visual separators |
 | Panel AI mode | `renderer.ts` — overlay panel with setup wizard |
 | Response routing | `renderer.ts` — chunks routed by `aiQuerySource` |
 | Welcome message | `renderer.ts` — `showWelcome()` |

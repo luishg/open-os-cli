@@ -103,4 +103,64 @@ Requirements for Flathub submission:
 - `asarUnpack` in the electron-builder config ensures node-pty is extracted from the asar archive at runtime (native modules can't run from inside asar).
 - The `postinstall` script has `|| true` so it doesn't fail during electron-builder's production install step where `@electron/rebuild` isn't present.
 - System prompt is built dynamically by `buildSystemPrompt()` in `main.ts` — reads OS, distro (`/etc/os-release`), arch, and shell at query time.
-- Command detection: the LLM is instructed to prefix commands with `$ `. The renderer extracts lines starting with `$ ` and shows approval options. This is a simple convention — no structured output or code block parsing.
+- Inline AI mode has visual separators (opening with "open-os" label, closing plain line) drawn with `─` (U+2500) using `term.cols` for dynamic width. The separator color matches the brand dodger blue.
+- Inline prompt history: `inlineHistory[]` stores submitted prompts in memory (session-scoped). Arrow Up/Down navigates the history. `inlineHistoryStash` preserves the current input when the user starts navigating, restoring it when they arrow back past the newest entry. Consecutive duplicates are skipped. This is independent of the shell's own history — it only applies inside the `input` state of the inline AI mode.
+
+### Structured AI responses (JSON format)
+
+The Ollama request includes `format: "json"`, which constrains the model to produce valid JSON. The system prompt instructs the LLM to respond with:
+
+```json
+{"text": "brief explanation", "commands": ["command1", "command2"]}
+```
+
+- Each `commands` entry is a complete, runnable shell command. Multi-line commands (heredocs, etc.) are stored as a single string with embedded `\n`.
+- `text` is the explanation shown to the user before any command review.
+- An empty `commands` array means no commands were suggested — the text is displayed and inline mode exits.
+
+**Parsing (`parseAiResponse()` in `renderer.ts`)** is defensive:
+- Tries `JSON.parse()` first.
+- Accepts field-name variations: `text` / `explanation` / `response` for the text field, `commands` / `command` for the array (local LLMs may deviate from the schema).
+- On JSON parse failure, falls back to the raw text and runs `extractCommands()` which tries code-fence extraction (```` ```...``` ````) first, then `$ ` prefix detection as a last resort.
+
+**Streaming trade-off**: because JSON is accumulated and parsed only after `ai:done`, the user sees `...` (thinking indicator) during generation instead of streaming text. This is the trade-off for reliable structured extraction.
+
+### Command display and preview
+
+`formatCommandPreview()` renders a command for the terminal:
+- Commands of 4 lines or fewer are shown in full (each line indented with 2 spaces).
+- Longer commands show the first 3 lines + a gray `… +N more lines` indicator.
+- Used by both `showCommandReview()` (multi-command) and `showCommandConfirm()` (single command).
+
+### Sequential command execution (inline mode)
+
+When the AI returns multiple commands, they are presented one at a time for individual approval — not batched.
+
+**State variables** (`renderer.ts`):
+- `inlineCommands: string[]` — all commands extracted from the AI response.
+- `inlineCommandIndex: number` — which command is currently being reviewed.
+- `inlineAcceptedCommands: string[]` — used only for single-command confirm phase.
+- `inlineReviewBusy: boolean` — true during the transition delay between commands (blocks input).
+
+**Single command flow** (most common):
+1. `onAiDone` sets `inlineCommandIndex = 1` (past review), `inlineAcceptedCommands = [cmd]`.
+2. `showCommandConfirm()` displays `► cmd` with `[I]nsert [R]un [C]ancel`.
+3. `handleInlineApproval()` enters the confirm phase (index >= commands.length).
+
+**Multi-command flow**:
+1. `onAiDone` sets `inlineCommandIndex = 0`, `inlineAcceptedCommands = []`.
+2. `showCommandReview()` displays `Command 1/N ─ cmd` with `[R]un [S]kip [C]ancel`.
+3. `handleInlineApproval()` enters the review phase (index < commands.length):
+   - **[R]un**: closes separator, writes `\r` to PTY for a fresh prompt, then after 50ms writes the command. If more commands remain, sets `inlineReviewBusy = true` and after 500ms opens a new separator and shows the next review. If it was the last command, resets state.
+   - **[S]kip**: increments index, shows next review or exits if none remain.
+   - **[C]ancel / Esc**: exits inline mode entirely.
+4. The 500ms delay between commands lets the PTY flush output before the next review prompt appears.
+
+### Multi-line command execution
+
+When writing a command to the PTY, all `\n` are replaced with `\r` (`cmd.replace(/\n/g, '\r')`). Each `\r` acts as pressing Enter, so heredocs work correctly:
+1. `cat > file <<'EOF'\r` → shell enters heredoc mode
+2. `line1\r` → heredoc body
+3. `EOF\r` → heredoc closes, command executes
+
+This conversion applies to both inline mode (Insert / Run) and panel mode action handlers.

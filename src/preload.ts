@@ -34,6 +34,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('ai:error', (_event, error) => callback(error));
   },
 
+  // --- Filesystem tab-completion ---
+  fsComplete: (partial: string) =>
+    ipcRenderer.invoke('fs:complete', partial) as Promise<string[]>,
+
   // --- App info ---
   getVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
 

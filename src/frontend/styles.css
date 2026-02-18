@@ -20,6 +20,7 @@ body {
 
 #terminal {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   padding: 16px 20px;
 }
@@ -31,6 +32,7 @@ body {
 /* --- Hint bar: bottom strip -------------------------------- */
 
 #hint-bar {
+  flex-shrink: 0;
   padding: 4px 12px;
   background: #0a1628;
   color: #3a5a7c;

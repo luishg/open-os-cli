@@ -25,6 +25,7 @@ declare global {
       onAiChunk: (callback: (chunk: string) => void) => void;
       onAiDone: (callback: () => void) => void;
       onAiError: (callback: (error: string) => void) => void;
+      fsComplete: (partial: string) => Promise<string[]>;
       getVersion: () => Promise<string>;
       configGet: () => Promise<{ model?: string }>;
       configSaveModel: (model: string) => Promise<{ model?: string }>;
@@ -53,7 +54,82 @@ const S = {
   brand: '\x1b[38;5;39m',     // dodger blue — branding
   white: '\x1b[1;97m',        // bold bright white
   gray: '\x1b[38;5;245m',     // dim gray
+  sep: '\x1b[38;5;39m',       // separator lines (dodger blue — matches logo)
+  cmd: '\x1b[1;97m',          // bold bright white — command text
 };
+
+// ============================================================
+// INLINE SEPARATORS
+// ============================================================
+
+function inlineSeparatorOpen(): void {
+  const label = ' open-os ';
+  const totalWidth = term.cols;
+  const sideLen = Math.max(1, Math.floor((totalWidth - label.length) / 2));
+  const rightLen = Math.max(1, totalWidth - sideLen - label.length);
+  const left = '─'.repeat(sideLen);
+  const right = '─'.repeat(rightLen);
+  term.write(`\r\n\r\n${S.sep}${left}${S.brand}${label}${S.sep}${right}${S.reset}\r\n\r\n`);
+}
+
+function inlineSeparatorClose(): void {
+  const line = '─'.repeat(term.cols);
+  term.write(`\r\n${S.sep}${line}${S.reset}\r\n`);
+}
+
+// ============================================================
+// COMMAND EXTRACTION & AI RESPONSE PARSING
+// Primary: JSON {"text","commands"} from Ollama format: "json".
+// Fallback: code-fence extraction, then $ prefix detection.
+// ============================================================
+
+function extractCommands(response: string): string[] {
+  // Try fenced code blocks first
+  const fenced: string[] = [];
+  const regex = /```\w*\n([\s\S]*?)```/g;
+  let match;
+  while ((match = regex.exec(response)) !== null) {
+    const cmd = match[1].trim();
+    if (cmd) fenced.push(cmd);
+  }
+  if (fenced.length > 0) return fenced;
+
+  // Fallback: $ prefix
+  return response
+    .split('\n')
+    .filter((l) => l.trimStart().startsWith('$ '))
+    .map((l) => l.trimStart().slice(2).trim())
+    .filter((cmd) => cmd.length > 0);
+}
+
+interface AiResponse { text: string; commands: string[]; }
+
+function parseAiResponse(raw: string): AiResponse {
+  try {
+    const parsed = JSON.parse(raw);
+    const text = typeof parsed.text === 'string' ? parsed.text
+      : typeof parsed.explanation === 'string' ? parsed.explanation
+      : typeof parsed.response === 'string' ? parsed.response : '';
+    const cmds = Array.isArray(parsed.commands) ? parsed.commands
+      : Array.isArray(parsed.command) ? parsed.command : [];
+    return {
+      text,
+      commands: cmds.filter((c: unknown): c is string =>
+        typeof c === 'string' && c.trim().length > 0),
+    };
+  } catch {
+    // Fallback for non-JSON responses (model didn't honour format)
+    return { text: raw, commands: extractCommands(raw) };
+  }
+}
+
+function formatCommandPreview(cmd: string): string {
+  const lines = cmd.split('\n');
+  if (lines.length <= 4) return lines.join('\r\n  ');
+  const truncated = lines.slice(0, 3);
+  truncated.push(`${S.gray}… +${lines.length - 3} more lines${S.reset}${S.cmd}`);
+  return truncated.join('\r\n  ');
+}
 
 // ============================================================
 // 1. TERMINAL SETUP
@@ -166,8 +242,14 @@ type InlineState = 'idle' | 'input' | 'streaming' | 'approval';
 let inlineState: InlineState = 'idle';
 let inlineInputBuffer = '';
 let inlineResponseBuffer = '';
-let inlineSuggestedCommand = '';
-let inlineFirstChunk = true;
+let inlineCommands: string[] = [];
+let inlineCommandIndex = 0;
+let inlineAcceptedCommands: string[] = [];
+
+// Inline prompt history (arrow up/down to navigate)
+const inlineHistory: string[] = [];
+let inlineHistoryIndex = -1;
+let inlineHistoryStash = '';
 
 // Which mode initiated the current AI query
 let aiQuerySource: 'inline' | 'panel' | null = null;
@@ -177,10 +259,14 @@ function enterInlineMode(): void {
   inlineState = 'input';
   inlineInputBuffer = '';
   inlineResponseBuffer = '';
-  inlineSuggestedCommand = '';
-  inlineFirstChunk = true;
+  inlineCommands = [];
+  inlineCommandIndex = 0;
+  inlineAcceptedCommands = [];
+  inlineHistoryIndex = -1;
+  inlineHistoryStash = '';
 
-  term.write(`\r\n${S.prompt} open-os > ${S.input}`);
+  inlineSeparatorOpen();
+  term.write(`${S.prompt}open-os > ${S.input}`);
 }
 
 function handleInlineInput(data: string): void {
@@ -190,8 +276,10 @@ function handleInlineInput(data: string): void {
       break;
     case 'streaming':
       if (data === '\x1b') {
-        term.write(`${S.reset}\r\n${S.error}[cancelled]${S.reset}`);
-        exitInlineMode();
+        term.write(`${S.reset}\r\n${S.error}[cancelled]${S.reset}\r\n`);
+        inlineSeparatorClose();
+        window.electronAPI.ptyWrite('\r');
+        resetInlineState();
       }
       break;
     case 'approval':
@@ -200,7 +288,78 @@ function handleInlineInput(data: string): void {
   }
 }
 
+function inlineReplaceInput(text: string): void {
+  // Erase current input on screen, then write new text
+  const eraseLen = inlineInputBuffer.length;
+  if (eraseLen > 0) term.write('\b \b'.repeat(eraseLen));
+  inlineInputBuffer = text;
+  if (text) term.write(text);
+}
+
+let tabCompletionBusy = false;
+
+function handleTabCompletion(): void {
+  if (tabCompletionBusy) return;
+
+  // Extract the last whitespace-delimited word as the partial path
+  const match = inlineInputBuffer.match(/(\S+)$/);
+  if (!match) return;
+  const partial = match[1];
+  const prefix = partial.endsWith('/') ? '' : partial.split('/').pop() || '';
+
+  tabCompletionBusy = true;
+  window.electronAPI.fsComplete(partial).then((matches) => {
+    tabCompletionBusy = false;
+    if (inlineState !== 'input' || matches.length === 0) return;
+
+    // Find the longest common prefix across all matches
+    let common = matches[0];
+    for (let i = 1; i < matches.length; i++) {
+      while (common && !matches[i].startsWith(common)) {
+        common = common.slice(0, -1);
+      }
+    }
+
+    const toAdd = common.slice(prefix.length);
+    if (toAdd) {
+      inlineInputBuffer += toAdd;
+      term.write(S.input + toAdd);
+    }
+  }).catch(() => { tabCompletionBusy = false; });
+}
+
 function handleInlineTyping(data: string): void {
+  // Arrow up / arrow down — history navigation
+  if (data === '\x1b[A') {
+    if (inlineHistory.length === 0) return;
+    if (inlineHistoryIndex === -1) {
+      inlineHistoryStash = inlineInputBuffer;
+      inlineHistoryIndex = inlineHistory.length - 1;
+    } else if (inlineHistoryIndex > 0) {
+      inlineHistoryIndex--;
+    } else {
+      return;
+    }
+    inlineReplaceInput(inlineHistory[inlineHistoryIndex]);
+    return;
+  }
+  if (data === '\x1b[B') {
+    if (inlineHistoryIndex === -1) return;
+    if (inlineHistoryIndex < inlineHistory.length - 1) {
+      inlineHistoryIndex++;
+      inlineReplaceInput(inlineHistory[inlineHistoryIndex]);
+    } else {
+      inlineHistoryIndex = -1;
+      inlineReplaceInput(inlineHistoryStash);
+    }
+    return;
+  }
+
+  if (data === '\t') {
+    handleTabCompletion();
+    return;
+  }
+
   if (data === '\r') {
     term.write(S.reset);
     submitInlineQuery();
@@ -225,31 +384,107 @@ function submitInlineQuery(): void {
     return;
   }
 
+  // Save to history (avoid consecutive duplicates)
+  if (inlineHistory.length === 0 || inlineHistory[inlineHistory.length - 1] !== prompt) {
+    inlineHistory.push(prompt);
+  }
+  inlineHistoryIndex = -1;
+  inlineHistoryStash = '';
+
   inlineState = 'streaming';
   aiQuerySource = 'inline';
-  inlineFirstChunk = true;
   inlineResponseBuffer = '';
 
-  term.write(`\r\n${S.dim}  ...${S.reset}`);
+  term.write(`\r\n${S.dim}...${S.reset}`);
 
   const context = captureTerminalContext();
   window.electronAPI.aiQuery(prompt, context);
 }
 
+// --- Multi-command: sequential review with immediate execution ---
+
+let inlineReviewBusy = false; // true while waiting between commands
+
+function showCommandReview(): void {
+  const i = inlineCommandIndex;
+  const total = inlineCommands.length;
+  const cmd = inlineCommands[i];
+  const preview = formatCommandPreview(cmd);
+  term.write(
+    `\r\n\r\n${S.gray}Command ${i + 1}/${total} ─${S.reset}\r\n  ${S.cmd}${preview}${S.reset}` +
+    `\r\n${S.approval}  [R]un  [S]kip  [C]ancel${S.reset}`,
+  );
+}
+
+// --- Single command: insert / run / cancel ---
+
+function showCommandConfirm(): void {
+  const cmd = inlineAcceptedCommands[0];
+  const preview = formatCommandPreview(cmd);
+  term.write(
+    `\r\n\r\n${S.gray}►${S.reset}\r\n  ${S.cmd}${preview}${S.reset}` +
+    `\r\n${S.approval}  [I]nsert  [R]un  [C]ancel${S.reset}`,
+  );
+}
+
+function advanceOrExit(): void {
+  inlineCommandIndex++;
+  if (inlineCommandIndex < inlineCommands.length) {
+    showCommandReview();
+  } else {
+    exitInlineMode();
+  }
+}
+
 function handleInlineApproval(data: string): void {
+  if (inlineReviewBusy) return; // ignore input during transition
   const key = data.toLowerCase();
-  const cmd = inlineSuggestedCommand;
+
+  // Review phase (multi-command): run immediately or skip
+  if (inlineCommandIndex < inlineCommands.length) {
+    if (key === 'r') {
+      const cmd = inlineCommands[inlineCommandIndex];
+      term.write(`${S.reset}\r\n`);
+      inlineSeparatorClose();
+      window.electronAPI.ptyWrite('\r');
+      setTimeout(() => {
+        window.electronAPI.ptyWrite(cmd.replace(/\n/g, '\r') + '\r');
+        inlineCommandIndex++;
+        if (inlineCommandIndex < inlineCommands.length) {
+          // Brief pause so command output can flush before next review
+          inlineReviewBusy = true;
+          setTimeout(() => {
+            inlineReviewBusy = false;
+            inlineSeparatorOpen();
+            showCommandReview();
+          }, 500);
+        } else {
+          resetInlineState();
+        }
+      }, 50);
+    } else if (key === 's') {
+      advanceOrExit();
+    } else if (key === 'c' || data === '\x1b') {
+      exitInlineMode();
+    }
+    return;
+  }
+
+  // Confirm phase (single command): insert, run, or cancel
+  const cmd = inlineAcceptedCommands[0];
 
   if (key === 'i') {
     term.write(`${S.reset}\r\n`);
+    inlineSeparatorClose();
     resetInlineState();
     window.electronAPI.ptyWrite('\r');
-    setTimeout(() => window.electronAPI.ptyWrite(cmd), 50);
-  } else if (key === 'a') {
+    setTimeout(() => window.electronAPI.ptyWrite(cmd.replace(/\n/g, '\r')), 50);
+  } else if (key === 'r') {
     term.write(`${S.reset}\r\n`);
+    inlineSeparatorClose();
     resetInlineState();
     window.electronAPI.ptyWrite('\r');
-    setTimeout(() => window.electronAPI.ptyWrite(cmd + '\r'), 50);
+    setTimeout(() => window.electronAPI.ptyWrite(cmd.replace(/\n/g, '\r') + '\r'), 50);
   } else if (key === 'c' || data === '\x1b') {
     exitInlineMode();
   }
@@ -257,6 +492,7 @@ function handleInlineApproval(data: string): void {
 
 function exitInlineMode(): void {
   term.write(`${S.reset}\r\n`);
+  inlineSeparatorClose();
   window.electronAPI.ptyWrite('\r');
   resetInlineState();
 }
@@ -265,7 +501,10 @@ function resetInlineState(): void {
   inlineState = 'idle';
   inlineInputBuffer = '';
   inlineResponseBuffer = '';
-  inlineSuggestedCommand = '';
+  inlineCommands = [];
+  inlineCommandIndex = 0;
+  inlineAcceptedCommands = [];
+  inlineReviewBusy = false;
   aiQuerySource = null;
 }
 
@@ -434,6 +673,7 @@ function captureTerminalContext(lineCount = 30): string {
 // ============================================================
 
 let panelSuggestedCommand = '';
+let panelResponseBuffer = '';
 let isStreaming = false;
 
 function sendPanelQuery(): void {
@@ -442,6 +682,7 @@ function sendPanelQuery(): void {
 
   isStreaming = true;
   panelSuggestedCommand = '';
+  panelResponseBuffer = '';
   aiOutput.textContent = '';
   aiActions.classList.add('hidden');
   aiStatus.textContent = 'thinking...';
@@ -468,50 +709,51 @@ aiInput.addEventListener('keydown', (e) => {
 
 window.electronAPI.onAiChunk((chunk) => {
   if (aiQuerySource === 'inline') {
-    if (inlineFirstChunk) {
-      term.write(`\r\n${S.response}`);
-      inlineFirstChunk = false;
-    }
-    term.write(chunk.replace(/\n/g, '\r\n'));
     inlineResponseBuffer += chunk;
   } else if (aiQuerySource === 'panel') {
-    aiOutput.textContent += chunk;
-    aiStatus.textContent = 'streaming...';
-    aiOutput.scrollTop = aiOutput.scrollHeight;
+    panelResponseBuffer += chunk;
+    aiStatus.textContent = 'generating...';
   }
 });
 
 window.electronAPI.onAiDone(() => {
   if (aiQuerySource === 'inline' && inlineState === 'streaming') {
-    term.write(S.reset);
+    const { text, commands } = parseAiResponse(inlineResponseBuffer);
 
-    const commands = inlineResponseBuffer
-      .split('\n')
-      .filter((l) => l.trimStart().startsWith('$ '))
-      .map((l) => l.trimStart().slice(2).trim());
+    if (text) {
+      term.write(`\r\n${S.response}${text.replace(/\n/g, '\r\n')}${S.reset}`);
+    }
 
-    if (commands.length > 0) {
-      inlineSuggestedCommand = commands.join('; ');
-      term.write(
-        `\r\n\r\n${S.approval}  [I]nsert  [A]ccept & Run  [C]ancel${S.reset}`,
-      );
-      inlineState = 'approval';
-    } else {
+    if (commands.length === 0) {
       term.write('\r\n');
       exitInlineMode();
+    } else if (commands.length === 1) {
+      inlineCommands = commands;
+      inlineCommandIndex = 1; // past review — go straight to confirm
+      inlineAcceptedCommands = commands.slice();
+      showCommandConfirm();
+      inlineState = 'approval';
+    } else {
+      inlineCommands = commands;
+      inlineCommandIndex = 0;
+      inlineAcceptedCommands = [];
+      showCommandReview();
+      inlineState = 'approval';
     }
   } else if (aiQuerySource === 'panel') {
     isStreaming = false;
     aiStatus.textContent = '';
 
-    const fullResponse = aiOutput.textContent || '';
-    const commands = fullResponse
-      .split('\n')
-      .filter((l) => l.trimStart().startsWith('$ '))
-      .map((l) => l.trimStart().slice(2).trim());
+    const { text, commands } = parseAiResponse(panelResponseBuffer);
+
+    let display = text;
+    if (commands.length > 0) {
+      display += '\n\n' + commands.map((c) => `$ ${c}`).join('\n\n');
+    }
+    aiOutput.textContent = display;
 
     if (commands.length > 0) {
-      panelSuggestedCommand = commands.join('; ');
+      panelSuggestedCommand = commands.join('\n');
       aiActions.classList.remove('hidden');
     }
     aiQuerySource = null;
@@ -520,8 +762,10 @@ window.electronAPI.onAiDone(() => {
 
 window.electronAPI.onAiError((error) => {
   if (aiQuerySource === 'inline') {
-    term.write(`\r\n${S.error}  [Error] ${error}${S.reset}\r\n`);
-    exitInlineMode();
+    term.write(`\r\n${S.error}[Error] ${error}${S.reset}\r\n`);
+    inlineSeparatorClose();
+    window.electronAPI.ptyWrite('\r');
+    resetInlineState();
   } else if (aiQuerySource === 'panel') {
     isStreaming = false;
     aiStatus.textContent = '';
@@ -541,11 +785,11 @@ aiActions.addEventListener('click', (e) => {
 
   switch (action) {
     case 'insert':
-      window.electronAPI.ptyWrite(panelSuggestedCommand);
+      window.electronAPI.ptyWrite(panelSuggestedCommand.replace(/\n/g, '\r'));
       closeAIPanel();
       break;
     case 'run':
-      window.electronAPI.ptyWrite(panelSuggestedCommand + '\r');
+      window.electronAPI.ptyWrite(panelSuggestedCommand.replace(/\n/g, '\r') + '\r');
       closeAIPanel();
       break;
     case 'cancel':

@@ -184,10 +184,10 @@ function buildSystemPrompt(): string {
 
   return `You are a concise terminal assistant.
 Environment: ${envLine}.
-When the user asks for help, suggest shell commands compatible with this system.
-Put each suggested command on its own line starting with: $
-Keep explanations brief (1-2 lines max before the command).
-If there are dangerous commands (rm -rf, dd, mkfs, etc.), warn explicitly.`;
+Always respond with JSON: {"text": "brief explanation", "commands": ["command1", "command2"]}
+Each command must be a complete, runnable shell command (may contain newlines for heredocs).
+Use an empty commands array when no commands are needed.
+Warn before dangerous commands (rm -rf, dd, mkfs…).`;
 }
 
 function queryOllama(prompt: string, context: string): void {
@@ -211,6 +211,7 @@ function queryOllama(prompt: string, context: string): void {
       },
     ],
     stream: true,
+    format: 'json',
   });
 
   const req = http.request(
@@ -290,6 +291,38 @@ function setupIPC(): void {
   // --- AI ---
   ipcMain.on('ai:query', (_event, payload: { prompt: string; context: string }) => {
     queryOllama(payload.prompt, payload.context);
+  });
+
+  // --- Filesystem tab-completion for inline AI prompt ---
+  ipcMain.handle('fs:complete', (_event, partial: string) => {
+    let cwd: string;
+    try {
+      cwd = fs.readlinkSync(`/proc/${shell.pid}/cwd`);
+    } catch {
+      cwd = process.env.HOME || process.cwd();
+    }
+    const expanded = partial.startsWith('~')
+      ? partial.replace(/^~/, process.env.HOME || '')
+      : partial;
+    const resolved = path.resolve(cwd, expanded);
+    const dir = partial.endsWith('/') ? resolved : path.dirname(resolved);
+    const prefix = partial.endsWith('/') ? '' : path.basename(expanded);
+
+    try {
+      const entries = fs.readdirSync(dir);
+      return entries
+        .filter((e) => e.startsWith(prefix))
+        .map((e) => {
+          try {
+            return fs.statSync(path.join(dir, e)).isDirectory() ? e + '/' : e;
+          } catch {
+            return e;
+          }
+        })
+        .sort();
+    } catch {
+      return [];
+    }
   });
 
   // --- App info ---
