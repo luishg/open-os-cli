@@ -191,12 +191,57 @@ window.electronAPI.onPtyData((data) => {
   }
 });
 
+// Onboarding intro — shown when Ollama is not running or no model is configured
+async function showOnboarding(): Promise<void> {
+  const b = S.brand;
+  const d = S.gray;
+  const w = S.white;
+  const r = S.reset;
+
+  const config = await window.electronAPI.configGet();
+  if (config.model) return; // already set up, skip
+
+  const ollamaResult = await window.electronAPI.ollamaListModels();
+  const ollamaRunning = ollamaResult.ok;
+  const hasModels = ollamaResult.ok && ollamaResult.models.length > 0;
+
+  const lines: string[] = [];
+
+  lines.push(`${b}  Getting started${r}`);
+  lines.push('');
+
+  if (!ollamaRunning) {
+    lines.push(`  ${d}This terminal uses ${w}Ollama${r}${d} for local AI assistance.${r}`);
+    lines.push(`  ${d}Install it from ${b}https://ollama.com${r}${d} and pull a model:${r}`);
+    lines.push('');
+    lines.push(`    ${w}ollama pull llama3${r}`);
+    lines.push('');
+    lines.push(`  ${d}Make sure the Ollama server is running (${w}ollama serve${r}${d}).${r}`);
+    lines.push('');
+  } else if (!hasModels) {
+    lines.push(`  ${d}Ollama is running but no models are installed. Pull one:${r}`);
+    lines.push('');
+    lines.push(`    ${w}ollama pull llama3${r}`);
+    lines.push('');
+  } else {
+    lines.push(`  ${d}Ollama is ready. Select a model in the panel below to begin.${r}`);
+    lines.push('');
+  }
+
+  lines.push(`  ${d}${w}Ctrl+Space${r}${d}  invoke the AI inline assistant${r}`);
+  lines.push(`  ${d}${w}Click${r}${d} the bar below to open the AI panel and select a model${r}`);
+  lines.push('');
+
+  term.write(lines.join('\r\n') + '\r\n');
+}
+
 // Show welcome, then flush buffered PTY data
 window.electronAPI
   .getVersion()
   .catch(() => '0.0.0')
-  .then((version) => {
+  .then(async (version) => {
     showWelcome(version);
+    await showOnboarding();
     welcomeShown = true;
     for (const data of ptyBuffer) {
       term.write(data);
