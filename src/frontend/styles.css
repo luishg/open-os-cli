@@ -25,6 +25,9 @@ body {
   padding: 16px 20px;
 }
 
+/* Prevent xterm canvas from overflowing padding on the right side */
+#terminal .xterm { overflow: hidden; }
+
 /* Hide xterm.js scrollbar — scroll via mouse wheel / Shift+PgUp like standard terminals */
 .xterm-viewport::-webkit-scrollbar { display: none; }
 .xterm-viewport { scrollbar-width: none; }

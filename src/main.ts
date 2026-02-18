@@ -18,6 +18,14 @@ import { execSync } from 'child_process';
 let mainWindow: BrowserWindow;
 let shell: pty.IPty;
 
+// Conversation history for Ollama multi-turn context
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+const conversationHistory: ChatMessage[] = [];
+const MAX_HISTORY_MESSAGES = 20; // 10 exchanges (user + assistant pairs)
+
 // ============================================================
 // CONFIG
 // Persists user settings (selected model, etc.) to disk.
@@ -74,7 +82,7 @@ function createWindow(): void {
     }
   });
 
-  // Right-click context menu: Copy / Paste
+  // Right-click context menu
   mainWindow.webContents.on('context-menu', () => {
     const menu = Menu.buildFromTemplate([
       {
@@ -88,6 +96,11 @@ function createWindow(): void {
           if (text) mainWindow.webContents.send('term:paste', text);
         },
       },
+      { type: 'separator' },
+      {
+        label: 'Clear',
+        click: () => mainWindow.webContents.send('term:clear'),
+      },
     ]);
     menu.popup({ window: mainWindow });
   });
@@ -100,14 +113,15 @@ function createWindow(): void {
 // ============================================================
 
 function createPty(): void {
-  const defaultShell =
-    os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || 'bash';
+  const isWin = os.platform() === 'win32';
+  const defaultShell = isWin ? 'powershell.exe' : process.env.SHELL || 'bash';
+  const shellArgs = isWin ? ['-NoLogo'] : [];
 
-  shell = pty.spawn(defaultShell, [], {
+  shell = pty.spawn(defaultShell, shellArgs, {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
-    cwd: process.env.HOME || process.cwd(),
+    cwd: os.homedir() || process.cwd(),
     env: process.env as { [key: string]: string },
   });
 
@@ -174,17 +188,23 @@ function getDistro(): string {
 function buildSystemPrompt(): string {
   const platform = os.platform();
   const arch = os.arch();
-  const userShell = path.basename(process.env.SHELL || 'bash');
+  const isWin = platform === 'win32';
+  const isMac = platform === 'darwin';
+  const userShell = isWin ? 'powershell' : path.basename(process.env.SHELL || 'bash');
   const distro = getDistro();
 
-  const envLine = [
-    distro || platform,
-    arch,
-    `shell: ${userShell}`,
-  ].join(', ');
+  const platformName = isWin ? 'Windows' : isMac ? 'macOS' : (distro || 'Linux');
+  const envLine = [platformName, arch, `shell: ${userShell}`].join(', ');
+
+  let platformHint = '';
+  if (isWin) {
+    platformHint = '\nUse PowerShell syntax. Do NOT suggest Unix/bash commands (ls -l, grep, cat, chmod, etc.). Use PowerShell cmdlets: Get-ChildItem, Select-String, Get-Content, Set-ExecutionPolicy, etc.';
+  } else if (isMac) {
+    platformHint = '\nThis is macOS. Use BSD/macOS command variants. Use brew for package management if relevant.';
+  }
 
   return `You are a concise terminal assistant.
-Environment: ${envLine}.
+Environment: ${envLine}.${platformHint}
 Always respond with JSON: {"text": "brief explanation", "commands": ["command1", "command2"]}
 Each command must be a complete, runnable shell command (may contain newlines for heredocs).
 Use an empty commands array when no commands are needed.
@@ -200,20 +220,31 @@ function queryOllama(prompt: string, context: string): void {
     return;
   }
 
+  // Build user message and add to conversation history
+  const userContent = context
+    ? `Terminal context:\n\`\`\`\n${context}\n\`\`\`\n\n${prompt}`
+    : prompt;
+
+  conversationHistory.push({ role: 'user', content: userContent });
+
+  // Trim oldest messages to stay within budget
+  while (conversationHistory.length > MAX_HISTORY_MESSAGES) {
+    conversationHistory.shift();
+  }
+
+  const messages = [
+    { role: 'system', content: buildSystemPrompt() },
+    ...conversationHistory,
+  ];
+
   const body = JSON.stringify({
     model,
-    messages: [
-      { role: 'system', content: buildSystemPrompt() },
-      {
-        role: 'user',
-        content: context
-          ? `Terminal context:\n\`\`\`\n${context}\n\`\`\`\n\n${prompt}`
-          : prompt,
-      },
-    ],
+    messages,
     stream: true,
     format: 'json',
   });
+
+  let currentAssistantResponse = '';
 
   const req = http.request(
     {
@@ -240,10 +271,14 @@ function queryOllama(prompt: string, context: string): void {
           try {
             const json = JSON.parse(line);
             if (json.message?.content) {
+              currentAssistantResponse += json.message.content;
               mainWindow.webContents.send('ai:chunk', json.message.content);
             }
             if (json.done && !doneSent) {
               doneSent = true;
+              if (currentAssistantResponse) {
+                conversationHistory.push({ role: 'assistant', content: currentAssistantResponse });
+              }
               mainWindow.webContents.send('ai:done');
             }
           } catch {
@@ -256,6 +291,9 @@ function queryOllama(prompt: string, context: string): void {
       res.on('end', () => {
         if (!doneSent) {
           doneSent = true;
+          if (currentAssistantResponse) {
+            conversationHistory.push({ role: 'assistant', content: currentAssistantResponse });
+          }
           mainWindow.webContents.send('ai:done');
         }
       });
@@ -263,6 +301,12 @@ function queryOllama(prompt: string, context: string): void {
   );
 
   req.on('error', (err: Error) => {
+    // Roll back the user message since the request failed
+    const lastIdx = conversationHistory.length - 1;
+    if (lastIdx >= 0 && conversationHistory[lastIdx].role === 'user') {
+      conversationHistory.pop();
+    }
+
     const message =
       err.message.includes('ECONNREFUSED')
         ? `Cannot connect to Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}. Is Ollama running?`
@@ -310,12 +354,14 @@ function setupIPC(): void {
     } catch {
       cwd = process.env.HOME || process.env.USERPROFILE || process.cwd();
     }
+    const home = os.homedir();
     const expanded = partial.startsWith('~')
-      ? partial.replace(/^~/, process.env.HOME || '')
+      ? partial.replace(/^~/, home)
       : partial;
     const resolved = path.resolve(cwd, expanded);
-    const dir = partial.endsWith('/') ? resolved : path.dirname(resolved);
-    const prefix = partial.endsWith('/') ? '' : path.basename(expanded);
+    const endsWithSep = partial.endsWith('/') || partial.endsWith('\\');
+    const dir = endsWithSep ? resolved : path.dirname(resolved);
+    const prefix = endsWithSep ? '' : path.basename(expanded);
 
     try {
       const entries = fs.readdirSync(dir);

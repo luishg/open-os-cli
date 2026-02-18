@@ -35,6 +35,7 @@ declare global {
       onToggleAIPanel: (callback: () => void) => void;
       onTermCopy: (callback: () => void) => void;
       onTermPaste: (callback: (text: string) => void) => void;
+      onTermClear: (callback: () => void) => void;
     };
   }
 }
@@ -271,6 +272,12 @@ function fitTerminal(): void {
 window.addEventListener('resize', fitTerminal);
 setTimeout(fitTerminal, 100);
 
+// ResizeObserver: re-fit terminal whenever its container dimensions change
+// (handles hint bar show/hide, panel open/close, font loading reflow)
+const terminalContainer = document.getElementById('terminal')!;
+const resizeObserver = new ResizeObserver(() => fitTerminal());
+resizeObserver.observe(terminalContainer);
+
 // ============================================================
 // 2. INLINE AI MODE
 //
@@ -350,7 +357,9 @@ function handleTabCompletion(): void {
   const match = inlineInputBuffer.match(/(\S+)$/);
   if (!match) return;
   const partial = match[1];
-  const prefix = partial.endsWith('/') ? '' : partial.split('/').pop() || '';
+  const prefix = (partial.endsWith('/') || partial.endsWith('\\'))
+    ? ''
+    : partial.split(/[/\\]/).pop() || '';
 
   tabCompletionBusy = true;
   window.electronAPI.fsComplete(partial).then((matches) => {
@@ -591,6 +600,7 @@ async function openAIPanel(): Promise<void> {
   aiPanelOpen = true;
   aiPanel.classList.add('open');
   hintBar.classList.add('hidden');
+  fitTerminal();
 
   const config = await window.electronAPI.configGet();
   configuredModel = config.model;
@@ -609,6 +619,7 @@ function closeAIPanel(): void {
   aiActions.classList.add('hidden');
   aiStatus.textContent = '';
   term.focus();
+  fitTerminal();
 }
 
 // Setup wizard
@@ -770,7 +781,6 @@ window.electronAPI.onAiDone(() => {
     }
 
     if (commands.length === 0) {
-      term.write('\r\n');
       exitInlineMode();
     } else if (commands.length === 1) {
       inlineCommands = commands;
@@ -844,7 +854,7 @@ aiActions.addEventListener('click', (e) => {
 });
 
 // ============================================================
-// 9. COPY / PASTE (right-click context menu)
+// 9. COPY / PASTE / CLEAR (right-click context menu)
 // ============================================================
 
 window.electronAPI.onTermCopy(() => {
@@ -861,4 +871,11 @@ window.electronAPI.onTermPaste((text) => {
   } else if (inlineState === 'idle') {
     window.electronAPI.ptyWrite(text);
   }
+});
+
+window.electronAPI.onTermClear(() => {
+  term.clear();
+  // Clear visible screen and move cursor home, then request a fresh prompt
+  term.write('\x1b[2J\x1b[H');
+  window.electronAPI.ptyWrite('\r');
 });

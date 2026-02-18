@@ -55,11 +55,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('toggle-ai-panel', () => callback());
   },
 
-  // --- Context menu: Copy / Paste ---
+  // --- Context menu: Copy / Paste / Clear ---
   onTermCopy: (callback: () => void) => {
     ipcRenderer.on('term:copy', () => callback());
   },
   onTermPaste: (callback: (text: string) => void) => {
     ipcRenderer.on('term:paste', (_event, text) => callback(text));
+  },
+  onTermClear: (callback: () => void) => {
+    ipcRenderer.on('term:clear', () => callback());
   },
 });
