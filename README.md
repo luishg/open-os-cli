@@ -23,19 +23,19 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ---
 
-## Download & install (v0.4.0)
+## Download & install (v0.4.1)
 
-Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.4.0).
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.4.1).
 
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.4.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.4.0/open-os-cli-0.4.0.AppImage) | ~105 MB |
+| [`open-os-cli-0.4.1.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.4.1/open-os-cli-0.4.1.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-cli-0.4.0.AppImage
-./open-os-cli-0.4.0.AppImage
+chmod +x open-os-cli-0.4.1.AppImage
+./open-os-cli-0.4.1.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -44,10 +44,10 @@ No installation needed. Works on any Linux distro with FUSE support. To integrat
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.4.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.4.0/open-os-cli-0.4.0.pacman) | ~73 MB |
+| [`open-os-cli-0.4.1.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.4.1/open-os-cli-0.4.1.pacman) | ~73 MB |
 
 ```bash
-sudo pacman -U open-os-cli-0.4.0.pacman
+sudo pacman -U open-os-cli-0.4.1.pacman
 ```
 
 After installing, launch with:
@@ -66,10 +66,10 @@ sudo pacman -R open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli_0.4.0_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.4.0/open-os-cli_0.4.0_amd64.deb) | ~73 MB |
+| [`open-os-cli_0.4.1_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.4.1/open-os-cli_0.4.1_amd64.deb) | ~73 MB |
 
 ```bash
-sudo dpkg -i open-os-cli_0.4.0_amd64.deb
+sudo dpkg -i open-os-cli_0.4.1_amd64.deb
 ```
 
 After installing, launch with:
