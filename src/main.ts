@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as http from 'http';
+import { execSync } from 'child_process';
 
 let mainWindow: BrowserWindow;
 let shell: pty.IPty;
@@ -297,9 +298,17 @@ function setupIPC(): void {
   ipcMain.handle('fs:complete', (_event, partial: string) => {
     let cwd: string;
     try {
-      cwd = fs.readlinkSync(`/proc/${shell.pid}/cwd`);
+      if (os.platform() === 'linux') {
+        cwd = fs.readlinkSync(`/proc/${shell.pid}/cwd`);
+      } else if (os.platform() === 'darwin') {
+        cwd = execSync(`lsof -p ${shell.pid} -Fn | grep '^fcwd$' -A1 | grep '^n' | cut -c2-`,
+          { encoding: 'utf-8' }).trim();
+        if (!cwd) throw new Error('lsof returned empty');
+      } else {
+        cwd = process.env.USERPROFILE || process.env.HOME || process.cwd();
+      }
     } catch {
-      cwd = process.env.HOME || process.cwd();
+      cwd = process.env.HOME || process.env.USERPROFILE || process.cwd();
     }
     const expanded = partial.startsWith('~')
       ? partial.replace(/^~/, process.env.HOME || '')

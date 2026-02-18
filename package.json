@@ -12,7 +12,7 @@
   "scripts": {
     "build": "node build.mjs",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --linux",
+    "dist": "npm run build && electron-builder",
     "postinstall": "electron-rebuild -f -w node-pty || true"
   },
   "dependencies": {
@@ -47,6 +47,17 @@
       ],
       "category": "System",
       "executableName": "open-os-cli"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
     },
     "pacman": {
       "depends": [
