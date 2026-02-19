@@ -1,6 +1,6 @@
 {
   "name": "open-os-cli",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Simple terminal. Smart assistance.",
   "main": "dist/main.js",
   "license": "MIT",
@@ -50,9 +50,13 @@
     },
     "mac": {
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        }
       ],
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "minimumSystemVersion": "10.15"
     },
     "win": {
       "target": [

@@ -58,7 +58,7 @@ Pushing a tag matching `v*` (e.g. `git tag v0.5.0 && git push origin v0.5.0`).
 | Runner | Platform | Targets | Output |
 |---|---|---|---|
 | `ubuntu-latest` | Linux | AppImage, pacman, deb | `.AppImage`, `.pacman`, `.deb` |
-| `macos-latest` | macOS | dmg | `.dmg` (arm64) |
+| `macos-latest` | macOS | dmg (universal) | `.dmg` (arm64 + x64) |
 | `windows-latest` | Windows | nsis | `.exe` installer |
 
 **`release`** — runs after all builds complete. Downloads all artifacts and creates a GitHub Release with `softprops/action-gh-release`.
@@ -77,6 +77,17 @@ Each runner installs what it needs before `npm install`:
 - `GH_TOKEN` is still set in the build step environment — electron-builder uses it to download Electron binaries from GitHub (avoids rate limits), not for publishing.
 - `node-pty` is a native C++ module. It must be compiled on each target platform with the correct Electron headers. This is why cross-compilation from a single OS doesn't work reliably.
 - The `dist` npm script runs `npm run build && electron-builder` without a platform flag — electron-builder auto-detects the current OS. The workflow overrides with `--linux`, `--mac`, or `--win` per runner.
+- **macOS universal build**: The `mac.target` config specifies `arch: ["universal"]`. electron-builder builds the app for both arm64 and x64, then merges them into a single universal `.app` bundle using `@electron/universal`. This ensures the DMG works on both Apple Silicon and Intel Macs. `node-pty` is compiled for both architectures during packaging (Xcode on the arm64 runner handles x64 cross-compilation).
+
+### Platform compatibility
+
+| Platform | Minimum version | Architectures |
+|---|---|---|
+| macOS | 10.15 Catalina (2019) | Apple Silicon (arm64) + Intel (x64) — universal binary |
+| Windows | Windows 10 | x64 |
+| Linux | Any with glibc 2.31+ | x64 |
+
+> Electron 33 supports macOS 10.15+. The `minimumSystemVersion` is set explicitly in `package.json` to `"10.15"`.
 
 ---
 

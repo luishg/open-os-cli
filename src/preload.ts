@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // --- App info ---
   getVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
+  getPlatform: () => process.platform,
 
   // --- Config & Ollama model selection ---
   configGet: () => ipcRenderer.invoke('config:get') as Promise<{ model?: string }>,

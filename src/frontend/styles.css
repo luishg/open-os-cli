@@ -22,7 +22,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  padding: 16px 20px;
+  padding: 16px 20px 24px;   /* extra bottom padding avoids last row clipping behind hint bar */
 }
 
 /* Prevent xterm canvas from overflowing padding on the right side */
