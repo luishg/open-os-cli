@@ -68,7 +68,7 @@ Pushing a tag matching `v*` (e.g. `git tag v0.5.0 && git push origin v0.5.0`).
 Each runner installs what it needs before `npm install`:
 
 - **Linux**: `libarchive-tools` — provides `bsdtar`, required by `fpm` to build `.pacman` packages.
-- **macOS**: Python via `actions/setup-python` — required by `node-gyp` to compile the native `node-pty` module.
+- **macOS**: Python via `actions/setup-python` + `pip install setuptools` — required by `node-gyp` to compile the native `node-pty` module. Python 3.12 removed `distutils`; `setuptools` restores it.
 - **Windows**: `windows-build-tools` — provides MSVC build tools for `node-gyp`.
 
 ### Key details

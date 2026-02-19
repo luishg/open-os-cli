@@ -44,6 +44,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Python 3.12 removed distutils; node-gyp needs it via setuptools
+      - name: Restore distutils for node-gyp
+        if: matrix.platform == 'mac'
+        run: pip install setuptools
+
       # Windows: build tools for node-gyp (node-pty)
       - name: Install Windows build deps
         if: matrix.platform == 'win'
