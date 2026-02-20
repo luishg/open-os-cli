@@ -1,6 +1,6 @@
 # open-os cli
 
-A small, local-first terminal emulator with optional AI assistance — transparent, safe, and easy to maintain.
+A simple terminal emulator with a secure, built-in AI assistant — no accounts, no telemetry.
 
 Part of **Open-OS** (https://open-os.com/): open, smart tools that make technology more interoperable.
 
