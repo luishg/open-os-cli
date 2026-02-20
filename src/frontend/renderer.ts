@@ -346,8 +346,7 @@ function switchToTab(tabId: string): void {
   activeTabId = tabId;
 
   // Re-fit and sync
-  next.fitAddon.fit();
-  window.electronAPI.ptyResize(tabId, next.term.cols, next.term.rows);
+  fitTab(next);
   next.term.focus();
 }
 
@@ -559,13 +558,50 @@ window.electronAPI.onPtyExit((tabId) => {
 
 // ============================================================
 // TERMINAL RESIZE
+//
+// Custom fit calculation: uses clientHeight (reliable across
+// box-sizing modes) minus explicit padding to determine the
+// content area available for the terminal grid.  This prevents
+// xterm.js rows from rendering into the pane's padding zone
+// which would cause content to appear behind the hint bar.
 // ============================================================
+
+function fitTab(tab: TabInstance): void {
+  const core = (tab.term as any)._core;
+  const dims = core._renderService?.dimensions;
+  if (!dims?.css?.cell?.width || !dims?.css?.cell?.height) {
+    // Render dimensions not ready yet — fall back to FitAddon
+    tab.fitAddon.fit();
+    window.electronAPI.ptyResize(tab.id, tab.term.cols, tab.term.rows);
+    return;
+  }
+
+  const pane = tab.paneEl;
+  const paneStyle = getComputedStyle(pane);
+  // clientHeight includes padding but NOT border/scrollbar.
+  // Subtract padding explicitly to get the true content area.
+  const availableHeight = pane.clientHeight
+    - (parseInt(paneStyle.paddingTop) || 0)
+    - (parseInt(paneStyle.paddingBottom) || 0);
+  const availableWidth = pane.clientWidth
+    - (parseInt(paneStyle.paddingLeft) || 0)
+    - (parseInt(paneStyle.paddingRight) || 0);
+
+  const cols = Math.max(2, Math.floor(availableWidth / dims.css.cell.width));
+  const rows = Math.max(1, Math.floor(availableHeight / dims.css.cell.height));
+
+  if (tab.term.rows !== rows || tab.term.cols !== cols) {
+    core._renderService.clear();
+    tab.term.resize(cols, rows);
+  }
+
+  window.electronAPI.ptyResize(tab.id, tab.term.cols, tab.term.rows);
+}
 
 function fitTerminal(): void {
   const tab = tabInstances.get(activeTabId);
   if (!tab) return;
-  tab.fitAddon.fit();
-  window.electronAPI.ptyResize(tab.id, tab.term.cols, tab.term.rows);
+  fitTab(tab);
 }
 window.addEventListener('resize', fitTerminal);
 setTimeout(fitTerminal, 100);

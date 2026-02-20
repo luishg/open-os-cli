@@ -101,7 +101,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   },
   cursor: { blink: true, style: 'block' },
   window: {
-    padding: { top: 16, right: 20, bottom: 24, left: 20 },
+    padding: { top: 16, right: 20, bottom: 16, left: 20 },
     scrollback: 1000,
   },
   keybindings: { aiTrigger: 'Ctrl+Space' },
