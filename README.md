@@ -17,7 +17,9 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 - Streaming responses from local LLMs via Ollama
 - Commands are never executed without explicit user approval
 - First-run setup wizard for model selection
-- Configuration persisted at `~/.config/open-os-cli/config.json`
+- Configurable font, cursor, padding, keybindings, and theme colors
+- Theme file support for customizing terminal and UI colors
+- Configuration persisted at `~/.config/open-os-cli/config.conf`
 
 ---
 
@@ -257,7 +259,9 @@ open-os-cli/
 | PTY spawn and pipe | `main.ts` — `createPty()` |
 | Ollama HTTP streaming | `main.ts` — `queryOllama()` |
 | Model listing | `main.ts` — `listOllamaModels()` |
-| Config persistence | `main.ts` — `loadConfig()` / `saveConfig()` |
+| Config persistence | `main.ts` — `loadConfigRaw()` / `saveConfigKey()` / `resolveConfig()` |
+| Theme loading | `main.ts` — `loadTheme()` |
+| Keybinding parsing | `main.ts` — `parseKeybinding()` |
 | System info for prompt | `main.ts` — `buildSystemPrompt()` |
 | IPC bridge | `preload.ts` — `contextBridge` |
 | Terminal rendering | `renderer.ts` — xterm.js setup |
@@ -270,15 +274,74 @@ open-os-cli/
 
 ## Configuration
 
-Settings are stored at `~/.config/open-os-cli/config.json`:
+Settings are stored at `~/.config/open-os-cli/config.conf` in Ghostty/Kitty-style key-value format. Open it from the right-click context menu (**Settings**) or the gear icon in the AI panel header. All keys are optional — missing values use sensible defaults.
+
+```conf
+# AI Model
+model = llama3:latest
+
+# Theme (load from ~/.config/open-os-cli/themes/{name}.json)
+# theme = dracula
+
+# Font
+font-family = "Cascadia Code", "Fira Code", "JetBrains Mono", monospace
+font-size = 14
+
+# Cursor
+cursor-blink = true
+cursor-style = block
+
+# Window
+window-padding-top = 16
+window-padding-right = 20
+window-padding-bottom = 24
+window-padding-left = 20
+window-scrollback = 1000
+
+# Keybindings
+keybind-ai-trigger = Ctrl+Space
+```
+
+| Key | Values | Default |
+|---|---|---|
+| `model` | Ollama model name | *(none — set via panel)* |
+| `theme` | Theme file name (without `.json`) | *(built-in Electric Blue)* |
+| `font-family` | CSS font stack | `"Cascadia Code", "Fira Code", "JetBrains Mono", monospace` |
+| `font-size` | 6–72 | `14` |
+| `cursor-blink` | `true` / `false` | `true` |
+| `cursor-style` | `block` / `underline` / `bar` | `block` |
+| `window-padding-*` | 0–200 (px) | `16` / `20` / `24` / `20` |
+| `window-scrollback` | 0–100000 | `1000` |
+| `keybind-ai-trigger` | `Modifier+Key` | `Ctrl+Space` |
+
+Changes take effect on restart. Lines starting with `#` are comments.
+
+### Themes
+
+Theme files live at `~/.config/open-os-cli/themes/{name}.json` and are referenced via `theme = name` in the main config. Example:
 
 ```json
 {
-  "model": "llama3:latest"
+  "name": "My Theme",
+  "terminal": {
+    "background": "#1a1a2e",
+    "foreground": "#e0e0e0",
+    "cursor": "#00b4d8",
+    "selectionBackground": "#00b4d844"
+  },
+  "ui": {
+    "background": "#1a1a2e",
+    "panelBackground": "#0d1b2a",
+    "panelBorder": "#00b4d8",
+    "panelHeaderBackground": "#0a1628",
+    "hintBarBackground": "#0a1628",
+    "hintBarColor": "#3a5a7c",
+    "accent": "#00b4d8"
+  }
 }
 ```
 
-The model can be changed at any time by clicking the model label in the panel header.
+The `terminal` section maps to xterm.js theme colors (supports all 16 ANSI colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, and their `bright` variants). The `ui` section controls the panel, hint bar, and accent colors. Any missing field falls back to the built-in default theme.
 
 Ollama connection defaults to `localhost:11434`.
 

@@ -9,7 +9,7 @@
 }
 
 body {
-  background: #1a1a2e;
+  background: var(--body-bg, #1a1a2e);
   overflow: hidden;
   height: 100vh;
   display: flex;
@@ -37,8 +37,8 @@ body {
 #hint-bar {
   flex-shrink: 0;
   padding: 4px 12px;
-  background: #0a1628;
-  color: #3a5a7c;
+  background: var(--hint-bar-bg, #0a1628);
+  color: var(--hint-bar-color, #3a5a7c);
   font-family: monospace;
   font-size: 12px;
   text-align: right;
@@ -64,8 +64,8 @@ body {
   left: 0;
   right: 0;
   max-height: 45%;
-  background: #0d1b2a;
-  border-top: 2px solid #00b4d8;
+  background: var(--panel-bg, #0d1b2a);
+  border-top: 2px solid var(--accent, #00b4d8);
   display: flex;
   flex-direction: column;
   z-index: 100;
@@ -85,7 +85,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: #0a1628;
+  background: var(--panel-header-bg, #0a1628);
   color: #e0e0e0;
   font-family: monospace;
   font-size: 13px;
@@ -93,12 +93,12 @@ body {
 
 #ai-header span:first-child {
   font-weight: bold;
-  color: #00b4d8;
+  color: var(--accent, #00b4d8);
 }
 
 #ai-status {
   flex: 1;
-  color: #00b4d8;
+  color: var(--accent, #00b4d8);
   font-size: 12px;
 }
 
@@ -113,7 +113,22 @@ body {
 }
 
 #ai-close:hover {
-  color: #00b4d8;
+  color: var(--accent, #00b4d8);
+}
+
+/* Settings button */
+#ai-settings {
+  background: none;
+  border: none;
+  color: #3a5a7c;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  transition: color 0.2s;
+}
+
+#ai-settings:hover {
+  color: var(--accent, #00b4d8);
 }
 
 /* --- Setup wizard ------------------------------------------ */
@@ -163,7 +178,7 @@ body {
 }
 
 .model-btn:hover {
-  border-color: #00b4d8;
+  border-color: var(--accent, #00b4d8);
   background: #112240;
 }
 
@@ -177,7 +192,7 @@ body {
 }
 
 #ai-model-label:hover {
-  color: #00b4d8;
+  color: var(--accent, #00b4d8);
 }
 
 /* Input row */
@@ -202,12 +217,12 @@ body {
 }
 
 #ai-input:focus {
-  border-color: #00b4d8;
+  border-color: var(--accent, #00b4d8);
 }
 
 #ai-send {
   padding: 6px 16px;
-  background: #00b4d8;
+  background: var(--accent, #00b4d8);
   color: #fff;
   border: none;
   border-radius: 4px;
@@ -262,16 +277,16 @@ body {
 }
 
 #ai-actions button:hover {
-  border-color: #00b4d8;
+  border-color: var(--accent, #00b4d8);
   color: #fff;
 }
 
 #ai-actions button[data-action="run"] {
-  border-color: #00b4d8;
-  color: #00b4d8;
+  border-color: var(--accent, #00b4d8);
+  color: var(--accent, #00b4d8);
 }
 
 #ai-actions button[data-action="run"]:hover {
-  background: #00b4d8;
+  background: var(--accent, #00b4d8);
   color: #fff;
 }

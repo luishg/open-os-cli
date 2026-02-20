@@ -7,13 +7,13 @@
 //   4. Bridge everything to the renderer via IPC
 // ============================================================
 
-import { app, BrowserWindow, ipcMain, Menu, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, clipboard, shell as electronShell } from 'electron';
 import * as pty from 'node-pty';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as http from 'http';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 
 let mainWindow: BrowserWindow;
 let shell: pty.IPty;
@@ -28,28 +28,380 @@ const MAX_HISTORY_MESSAGES = 20; // 10 exchanges (user + assistant pairs)
 
 // ============================================================
 // CONFIG
-// Persists user settings (selected model, etc.) to disk.
-// Location: ~/.config/open-os-cli/config.json
+// Persists user settings to disk in Ghostty/Kitty-style key-value format.
+// Location: ~/.config/open-os-cli/config.conf
+// Theme files: ~/.config/open-os-cli/themes/{name}.json
 // ============================================================
 
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'open-os-cli');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.conf');
+const THEMES_DIR = path.join(CONFIG_DIR, 'themes');
 
-interface AppConfig {
-  model?: string;
+// --- Config interfaces ---
+
+interface ResolvedConfig {
+  model: string | null;
+  theme: string | null;
+  font: { family: string; size: number };
+  cursor: { blink: boolean; style: 'block' | 'underline' | 'bar' };
+  window: {
+    padding: { top: number; right: number; bottom: number; left: number };
+    scrollback: number;
+  };
+  keybindings: { aiTrigger: string };
 }
 
-function loadConfig(): AppConfig {
+interface ThemeColors {
+  terminal: {
+    background: string;
+    foreground: string;
+    cursor: string;
+    selectionBackground: string;
+    black?: string;
+    red?: string;
+    green?: string;
+    yellow?: string;
+    blue?: string;
+    magenta?: string;
+    cyan?: string;
+    white?: string;
+    brightBlack?: string;
+    brightRed?: string;
+    brightGreen?: string;
+    brightYellow?: string;
+    brightBlue?: string;
+    brightMagenta?: string;
+    brightCyan?: string;
+    brightWhite?: string;
+  };
+  ui: {
+    background: string;
+    panelBackground: string;
+    panelBorder: string;
+    panelHeaderBackground: string;
+    hintBarBackground: string;
+    hintBarColor: string;
+    accent: string;
+  };
+}
+
+// --- Defaults ---
+
+const DEFAULT_CONFIG: ResolvedConfig = {
+  model: null,
+  theme: null,
+  font: {
+    family: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+    size: 14,
+  },
+  cursor: { blink: true, style: 'block' },
+  window: {
+    padding: { top: 16, right: 20, bottom: 24, left: 20 },
+    scrollback: 1000,
+  },
+  keybindings: { aiTrigger: 'Ctrl+Space' },
+};
+
+const DEFAULT_THEME: ThemeColors = {
+  terminal: {
+    background: '#1a1a2e',
+    foreground: '#e0e0e0',
+    cursor: '#00b4d8',
+    selectionBackground: '#00b4d844',
+  },
+  ui: {
+    background: '#1a1a2e',
+    panelBackground: '#0d1b2a',
+    panelBorder: '#00b4d8',
+    panelHeaderBackground: '#0a1628',
+    hintBarBackground: '#0a1628',
+    hintBarColor: '#3a5a7c',
+    accent: '#00b4d8',
+  },
+};
+
+// --- .conf parser (Ghostty/Kitty-style key = value) ---
+
+function parseConfFile(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    // Skip empty lines and comments
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const value = trimmed.slice(eqIdx + 1).trim();
+    if (key) result[key] = value;
+  }
+  return result;
+}
+
+function loadConfigRaw(): Record<string, string> {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    return parseConfFile(fs.readFileSync(CONFIG_FILE, 'utf-8'));
   } catch {
     return {};
   }
 }
 
-function saveConfig(config: AppConfig): void {
+// --- .conf writer ---
+
+function writeConfFile(filePath: string, sections: { comment?: string; entries: [string, string][] }[]): void {
+  const lines: string[] = [];
+  for (const section of sections) {
+    if (section.comment) {
+      lines.push(`# ${section.comment}`);
+    }
+    for (const [key, value] of section.entries) {
+      lines.push(`${key} = ${value}`);
+    }
+    lines.push('');
+  }
+  fs.writeFileSync(filePath, lines.join('\n'));
+}
+
+// --- Save a single key into the .conf file (preserves other values & comments) ---
+
+function saveConfigKey(key: string, value: string): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+
+  let content = '';
+  try {
+    content = fs.readFileSync(CONFIG_FILE, 'utf-8');
+  } catch {
+    // File doesn't exist yet — will be created
+  }
+
+  const lines = content.split('\n');
+  let found = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('#') || !trimmed) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    const lineKey = trimmed.slice(0, eqIdx).trim();
+    if (lineKey === key) {
+      lines[i] = `${key} = ${value}`;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    // Append the key at the end
+    lines.push(`${key} = ${value}`);
+  }
+
+  fs.writeFileSync(CONFIG_FILE, lines.join('\n'));
+}
+
+// --- Config resolution (flat keys → typed config) ---
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resolveConfig(): ResolvedConfig {
+  const raw = loadConfigRaw();
+  const d = DEFAULT_CONFIG;
+
+  const parsedSize = parseFloat(raw['font-size']);
+  const parsedScrollback = parseInt(raw['window-scrollback'], 10);
+  const parsedPadTop = parseInt(raw['window-padding-top'], 10);
+  const parsedPadRight = parseInt(raw['window-padding-right'], 10);
+  const parsedPadBottom = parseInt(raw['window-padding-bottom'], 10);
+  const parsedPadLeft = parseInt(raw['window-padding-left'], 10);
+
+  const cursorStyle = raw['cursor-style'] || d.cursor.style;
+  const validStyles = ['block', 'underline', 'bar'];
+
+  const blinkValue = raw['cursor-blink'];
+  const blink = blinkValue === 'true' ? true
+    : blinkValue === 'false' ? false
+    : d.cursor.blink;
+
+  return {
+    model: raw['model'] || d.model,
+    theme: raw['theme'] || d.theme,
+    font: {
+      family: raw['font-family']?.trim() || d.font.family,
+      size: !isNaN(parsedSize) ? clamp(Math.round(parsedSize), 6, 72) : d.font.size,
+    },
+    cursor: {
+      blink,
+      style: validStyles.includes(cursorStyle)
+        ? cursorStyle as 'block' | 'underline' | 'bar' : d.cursor.style,
+    },
+    window: {
+      padding: {
+        top: !isNaN(parsedPadTop) ? clamp(parsedPadTop, 0, 200) : d.window.padding.top,
+        right: !isNaN(parsedPadRight) ? clamp(parsedPadRight, 0, 200) : d.window.padding.right,
+        bottom: !isNaN(parsedPadBottom) ? clamp(parsedPadBottom, 0, 200) : d.window.padding.bottom,
+        left: !isNaN(parsedPadLeft) ? clamp(parsedPadLeft, 0, 200) : d.window.padding.left,
+      },
+      scrollback: !isNaN(parsedScrollback) ? clamp(parsedScrollback, 0, 100000) : d.window.scrollback,
+    },
+    keybindings: {
+      aiTrigger: raw['keybind-ai-trigger']?.trim() || d.keybindings.aiTrigger,
+    },
+  };
+}
+
+// --- Theme loading (themes stay as JSON — they're structured data, not user-edited frequently) ---
+
+function loadTheme(name: string | null): ThemeColors {
+  if (!name) return DEFAULT_THEME;
+
+  try {
+    const themeFile = path.join(THEMES_DIR, `${name}.json`);
+    const raw = JSON.parse(fs.readFileSync(themeFile, 'utf-8'));
+    const t = raw.terminal || {};
+    const u = raw.ui || {};
+    const dt = DEFAULT_THEME.terminal;
+    const du = DEFAULT_THEME.ui;
+
+    return {
+      terminal: {
+        background: typeof t.background === 'string' ? t.background : dt.background,
+        foreground: typeof t.foreground === 'string' ? t.foreground : dt.foreground,
+        cursor: typeof t.cursor === 'string' ? t.cursor : dt.cursor,
+        selectionBackground: typeof t.selectionBackground === 'string' ? t.selectionBackground : dt.selectionBackground,
+        ...(typeof t.black === 'string' && { black: t.black }),
+        ...(typeof t.red === 'string' && { red: t.red }),
+        ...(typeof t.green === 'string' && { green: t.green }),
+        ...(typeof t.yellow === 'string' && { yellow: t.yellow }),
+        ...(typeof t.blue === 'string' && { blue: t.blue }),
+        ...(typeof t.magenta === 'string' && { magenta: t.magenta }),
+        ...(typeof t.cyan === 'string' && { cyan: t.cyan }),
+        ...(typeof t.white === 'string' && { white: t.white }),
+        ...(typeof t.brightBlack === 'string' && { brightBlack: t.brightBlack }),
+        ...(typeof t.brightRed === 'string' && { brightRed: t.brightRed }),
+        ...(typeof t.brightGreen === 'string' && { brightGreen: t.brightGreen }),
+        ...(typeof t.brightYellow === 'string' && { brightYellow: t.brightYellow }),
+        ...(typeof t.brightBlue === 'string' && { brightBlue: t.brightBlue }),
+        ...(typeof t.brightMagenta === 'string' && { brightMagenta: t.brightMagenta }),
+        ...(typeof t.brightCyan === 'string' && { brightCyan: t.brightCyan }),
+        ...(typeof t.brightWhite === 'string' && { brightWhite: t.brightWhite }),
+      },
+      ui: {
+        background: typeof u.background === 'string' ? u.background : du.background,
+        panelBackground: typeof u.panelBackground === 'string' ? u.panelBackground : du.panelBackground,
+        panelBorder: typeof u.panelBorder === 'string' ? u.panelBorder : du.panelBorder,
+        panelHeaderBackground: typeof u.panelHeaderBackground === 'string' ? u.panelHeaderBackground : du.panelHeaderBackground,
+        hintBarBackground: typeof u.hintBarBackground === 'string' ? u.hintBarBackground : du.hintBarBackground,
+        hintBarColor: typeof u.hintBarColor === 'string' ? u.hintBarColor : du.hintBarColor,
+        accent: typeof u.accent === 'string' ? u.accent : du.accent,
+      },
+    };
+  } catch {
+    return DEFAULT_THEME;
+  }
+}
+
+// --- Keybinding parsing ---
+
+interface ParsedKeybinding {
+  control: boolean;
+  shift: boolean;
+  alt: boolean;
+  meta: boolean;
+  code: string;
+}
+
+function parseKeybinding(binding: string): ParsedKeybinding {
+  const parts = binding.split('+').map(p => p.trim());
+  const key = parts.pop() || 'Space';
+  const modifiers = new Set(parts.map(m => m.toLowerCase()));
+
+  // Map user-friendly names to Electron input.code values
+  const codeMap: Record<string, string> = {
+    space: 'Space', enter: 'Enter', tab: 'Tab', escape: 'Escape',
+    backspace: 'Backspace', delete: 'Delete',
+    arrowup: 'ArrowUp', arrowdown: 'ArrowDown',
+    arrowleft: 'ArrowLeft', arrowright: 'ArrowRight',
+  };
+
+  const keyLower = key.toLowerCase();
+  const code = codeMap[keyLower]
+    || (keyLower.length === 1 && keyLower >= 'a' && keyLower <= 'z' ? `Key${key.toUpperCase()}` : key);
+
+  return {
+    control: modifiers.has('ctrl') || modifiers.has('control'),
+    shift: modifiers.has('shift'),
+    alt: modifiers.has('alt'),
+    meta: modifiers.has('meta') || modifiers.has('cmd') || modifiers.has('super'),
+    code,
+  };
+}
+
+// --- Open config in system editor ---
+
+function ensureConfigFile(): void {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+
+  // Read existing values (if any) to preserve user settings
+  const existing = loadConfigRaw();
+  const d = DEFAULT_CONFIG;
+
+  writeConfFile(CONFIG_FILE, [
+    {
+      comment: 'AI Model',
+      entries: [['model', existing['model'] || '']],
+    },
+    {
+      comment: 'Theme (load from ~/.config/open-os-cli/themes/{name}.json)',
+      entries: [['# theme', existing['theme'] || 'dracula']],
+    },
+    {
+      comment: 'Font',
+      entries: [
+        ['font-family', existing['font-family'] || d.font.family],
+        ['font-size', existing['font-size'] || String(d.font.size)],
+      ],
+    },
+    {
+      comment: 'Cursor',
+      entries: [
+        ['cursor-blink', existing['cursor-blink'] || String(d.cursor.blink)],
+        ['cursor-style', existing['cursor-style'] || d.cursor.style],
+      ],
+    },
+    {
+      comment: 'Window',
+      entries: [
+        ['window-padding-top', existing['window-padding-top'] || String(d.window.padding.top)],
+        ['window-padding-right', existing['window-padding-right'] || String(d.window.padding.right)],
+        ['window-padding-bottom', existing['window-padding-bottom'] || String(d.window.padding.bottom)],
+        ['window-padding-left', existing['window-padding-left'] || String(d.window.padding.left)],
+        ['window-scrollback', existing['window-scrollback'] || String(d.window.scrollback)],
+      ],
+    },
+    {
+      comment: 'Keybindings',
+      entries: [
+        ['keybind-ai-trigger', existing['keybind-ai-trigger'] || d.keybindings.aiTrigger],
+      ],
+    },
+  ]);
+}
+
+function openConfigFile(): void {
+  ensureConfigFile();
+
+  // Platform-specific: open in text editor (not browser)
+  if (os.platform() === 'darwin') {
+    // macOS: open -t forces default text editor
+    spawn('open', ['-t', CONFIG_FILE], { detached: true, stdio: 'ignore' }).unref();
+  } else if (os.platform() === 'win32') {
+    // Windows: shell.openPath works correctly for .conf
+    electronShell.openPath(CONFIG_FILE);
+  } else {
+    // Linux: prefer $VISUAL/$EDITOR, fall back to xdg-open (.conf = text/plain)
+    const editor = process.env.VISUAL || process.env.EDITOR || 'xdg-open';
+    spawn(editor, [CONFIG_FILE], { detached: true, stdio: 'ignore' }).unref();
+  }
 }
 
 // ============================================================
@@ -74,9 +426,19 @@ function createWindow(): void {
 
   mainWindow.loadFile(path.join(__dirname, 'frontend', 'index.html'));
 
-  // Intercept Ctrl+Space at Electron level — before xterm.js can swallow it
+  // Intercept AI trigger keybinding at Electron level — before xterm.js can swallow it
+  const config = resolveConfig();
+  const aiTrigger = parseKeybinding(config.keybindings.aiTrigger);
+
   mainWindow.webContents.on('before-input-event', (_event, input) => {
-    if (input.control && input.code === 'Space' && input.type === 'keyDown') {
+    if (
+      input.type === 'keyDown' &&
+      input.control === aiTrigger.control &&
+      input.shift === aiTrigger.shift &&
+      input.alt === aiTrigger.alt &&
+      input.meta === aiTrigger.meta &&
+      input.code === aiTrigger.code
+    ) {
       _event.preventDefault();
       mainWindow.webContents.send('toggle-ai-panel');
     }
@@ -100,6 +462,11 @@ function createWindow(): void {
       {
         label: 'Clear',
         click: () => mainWindow.webContents.send('term:clear'),
+      },
+      { type: 'separator' },
+      {
+        label: 'Settings',
+        click: () => openConfigFile(),
       },
     ]);
     menu.popup({ window: mainWindow });
@@ -212,11 +579,12 @@ Warn before dangerous commands (rm -rf, dd, mkfs…).`;
 }
 
 function queryOllama(prompt: string, context: string): void {
-  const config = loadConfig();
+  const config = resolveConfig();
   const model = config.model;
 
   if (!model) {
-    mainWindow.webContents.send('ai:error', 'No model selected. Press Ctrl+Space to configure.');
+    const trigger = config.keybindings.aiTrigger;
+    mainWindow.webContents.send('ai:error', `No model selected. Press ${trigger} to configure.`);
     return;
   }
 
@@ -384,13 +752,20 @@ function setupIPC(): void {
   ipcMain.handle('app:get-version', () => app.getVersion());
 
   // --- Config & Ollama model selection ---
-  ipcMain.handle('config:get', () => loadConfig());
+  ipcMain.handle('config:get', () => resolveConfig());
+
+  ipcMain.handle('config:get-theme', () => {
+    const config = resolveConfig();
+    return loadTheme(config.theme);
+  });
+
+  ipcMain.handle('config:open', () => {
+    openConfigFile();
+  });
 
   ipcMain.handle('config:save-model', (_event, model: string) => {
-    const config = loadConfig();
-    config.model = model;
-    saveConfig(config);
-    return config;
+    saveConfigKey('model', model);
+    return resolveConfig();
   });
 
   ipcMain.handle('ollama:list-models', async () => {
@@ -409,7 +784,23 @@ function setupIPC(): void {
 // 5. APP LIFECYCLE
 // ============================================================
 
+// Migrate old config.json → config.conf on first run after update
+function migrateJsonConfig(): void {
+  const oldFile = path.join(CONFIG_DIR, 'config.json');
+  try {
+    if (!fs.existsSync(oldFile)) return;
+    // Only migrate if new .conf doesn't exist yet
+    if (fs.existsSync(CONFIG_FILE)) return;
+    const old = JSON.parse(fs.readFileSync(oldFile, 'utf-8'));
+    if (old.model) saveConfigKey('model', old.model);
+    // Leave old file in place — user can delete it manually
+  } catch {
+    // Migration is best-effort
+  }
+}
+
 app.whenReady().then(() => {
+  migrateJsonConfig();
   createWindow();
   createPty();
   setupIPC();

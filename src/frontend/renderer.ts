@@ -14,6 +14,39 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
+// --- Config types (mirror main process ResolvedConfig / ThemeColors) ---
+
+interface AppConfigResolved {
+  model: string | null;
+  theme: string | null;
+  font: { family: string; size: number };
+  cursor: { blink: boolean; style: 'block' | 'underline' | 'bar' };
+  window: {
+    padding: { top: number; right: number; bottom: number; left: number };
+    scrollback: number;
+  };
+  keybindings: { aiTrigger: string };
+}
+
+interface ThemeColors {
+  terminal: {
+    background: string;
+    foreground: string;
+    cursor: string;
+    selectionBackground: string;
+    [key: string]: string | undefined;
+  };
+  ui: {
+    background: string;
+    panelBackground: string;
+    panelBorder: string;
+    panelHeaderBackground: string;
+    hintBarBackground: string;
+    hintBarColor: string;
+    accent: string;
+  };
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -28,7 +61,9 @@ declare global {
       fsComplete: (partial: string) => Promise<string[]>;
       getVersion: () => Promise<string>;
       getPlatform: () => string;
-      configGet: () => Promise<{ model?: string }>;
+      configGet: () => Promise<AppConfigResolved>;
+      configGetTheme: () => Promise<ThemeColors>;
+      configOpen: () => Promise<void>;
       configSaveModel: (model: string) => Promise<{ model?: string }>;
       ollamaListModels: () => Promise<
         { ok: true; models: string[] } | { ok: false; error: string }
@@ -40,6 +75,9 @@ declare global {
     };
   }
 }
+
+// Module-level resolved config (populated during startup)
+let appConfig: AppConfigResolved | null = null;
 
 // ============================================================
 // ANSI styles for inline mode
@@ -135,6 +173,7 @@ function formatCommandPreview(cmd: string): string {
 
 // ============================================================
 // 1. TERMINAL SETUP
+// Created with safe defaults — reconfigured after config loads via applyConfig()
 // ============================================================
 
 const term = new Terminal({
@@ -153,6 +192,59 @@ const fitAddon = new FitAddon();
 term.loadAddon(fitAddon);
 term.open(document.getElementById('terminal')!);
 fitAddon.fit();
+
+// ============================================================
+// CONFIG APPLICATION
+// Fetches resolved config + theme from main process and applies
+// to xterm.js options, terminal padding, and UI CSS variables.
+// ============================================================
+
+async function applyConfig(): Promise<void> {
+  const config = await window.electronAPI.configGet();
+  const theme = await window.electronAPI.configGetTheme();
+  appConfig = config;
+
+  // Font
+  term.options.fontFamily = config.font.family;
+  term.options.fontSize = config.font.size;
+
+  // Cursor
+  term.options.cursorBlink = config.cursor.blink;
+  term.options.cursorStyle = config.cursor.style;
+
+  // Scrollback
+  term.options.scrollback = config.window.scrollback;
+
+  // Terminal theme colors
+  const termTheme: Record<string, string> = {};
+  for (const [key, value] of Object.entries(theme.terminal)) {
+    if (typeof value === 'string') termTheme[key] = value;
+  }
+  term.options.theme = termTheme;
+
+  // Terminal padding — inline style overrides CSS default
+  const el = document.getElementById('terminal')!;
+  const p = config.window.padding;
+  el.style.padding = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
+
+  // UI theme — CSS custom properties on :root
+  const root = document.documentElement;
+  root.style.setProperty('--body-bg', theme.ui.background);
+  root.style.setProperty('--panel-bg', theme.ui.panelBackground);
+  root.style.setProperty('--panel-border', theme.ui.panelBorder);
+  root.style.setProperty('--panel-header-bg', theme.ui.panelHeaderBackground);
+  root.style.setProperty('--hint-bar-bg', theme.ui.hintBarBackground);
+  root.style.setProperty('--hint-bar-color', theme.ui.hintBarColor);
+  root.style.setProperty('--accent', theme.ui.accent);
+  document.body.style.background = theme.ui.background;
+
+  // Re-fit after font/padding changes
+  fitTerminal();
+}
+
+function getAiTriggerLabel(): string {
+  return appConfig?.keybindings.aiTrigger ?? 'Ctrl+Space';
+}
 
 // ============================================================
 // WELCOME MESSAGE
@@ -178,7 +270,7 @@ function showWelcome(version: string): void {
       `${b}           ░██${r}`,
       '',
       ` ${d}v${version} — Simple terminal. Smart assistance.${r}`,
-      ` ${d}Ctrl+Space — open-os assistant${r}`,
+      ` ${d}${getAiTriggerLabel()} — open-os assistant${r}`,
       '',
     ].join('\r\n') + '\r\n',
   );
@@ -241,7 +333,7 @@ async function showOnboarding(): Promise<void> {
       lines.push('');
     }
 
-    lines.push(`  ${d}${w}Ctrl+Space${r}${d}  invoke the AI inline assistant${r}`);
+    lines.push(`  ${d}${w}${getAiTriggerLabel()}${r}${d}  invoke the AI inline assistant${r}`);
     lines.push(`  ${d}${w}Click${r}${d} the bar below to open the AI panel and select a model${r}`);
     lines.push('');
   }
@@ -249,11 +341,12 @@ async function showOnboarding(): Promise<void> {
   term.write(lines.join('\r\n') + '\r\n');
 }
 
-// Show welcome, then flush buffered PTY data
+// Apply config, show welcome, then flush buffered PTY data
 window.electronAPI
   .getVersion()
   .catch(() => '0.0.0')
   .then(async (version) => {
+    await applyConfig().catch(() => {}); // continue even if config fails
     showWelcome(version);
     await showOnboarding();
     welcomeShown = true;
@@ -610,12 +703,13 @@ let configuredModel: string | undefined;
 
 function updateHintBar(): void {
   const model = configuredModel ? ` · ${configuredModel}` : '';
-  hintBar.textContent = `Ctrl+Space — open-os inline  |  Click here — open-os panel${model}`;
+  const trigger = getAiTriggerLabel();
+  hintBar.textContent = `${trigger} — open-os inline  |  Click here — open-os panel${model}`;
 }
 
 // Load config on startup
 window.electronAPI.configGet().then((config) => {
-  configuredModel = config.model;
+  configuredModel = config.model ?? undefined;
   updateHintBar();
 });
 
@@ -626,7 +720,7 @@ async function openAIPanel(): Promise<void> {
   fitTerminal();
 
   const config = await window.electronAPI.configGet();
-  configuredModel = config.model;
+  configuredModel = config.model ?? undefined;
 
   if (!configuredModel) {
     showSetup();
@@ -702,7 +796,7 @@ hintBar.addEventListener('click', () => {
 });
 
 // ============================================================
-// 4. HOTKEY: Ctrl+Space
+// 4. HOTKEY (configurable, default: Ctrl+Space)
 //
 // Primary action: toggle inline AI mode in the terminal.
 // If the panel is open, close it instead.
@@ -720,7 +814,7 @@ window.electronAPI.onToggleAIPanel(async () => {
   }
 
   const config = await window.electronAPI.configGet();
-  configuredModel = config.model;
+  configuredModel = config.model ?? undefined;
 
   if (!configuredModel) {
     openAIPanel();
@@ -901,4 +995,12 @@ window.electronAPI.onTermClear(() => {
   // Clear visible screen and move cursor home, then request a fresh prompt
   term.write('\x1b[2J\x1b[H');
   window.electronAPI.ptyWrite('\r');
+});
+
+// ============================================================
+// 10. SETTINGS (open config file)
+// ============================================================
+
+document.getElementById('ai-settings')!.addEventListener('click', () => {
+  window.electronAPI.configOpen();
 });

@@ -43,15 +43,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => process.platform,
 
   // --- Config & Ollama model selection ---
-  configGet: () => ipcRenderer.invoke('config:get') as Promise<{ model?: string }>,
+  configGet: () => ipcRenderer.invoke('config:get'),
+  configGetTheme: () => ipcRenderer.invoke('config:get-theme'),
+  configOpen: () => ipcRenderer.invoke('config:open'),
   configSaveModel: (model: string) =>
-    ipcRenderer.invoke('config:save-model', model) as Promise<{ model?: string }>,
+    ipcRenderer.invoke('config:save-model', model),
   ollamaListModels: () =>
     ipcRenderer.invoke('ollama:list-models') as Promise<
       { ok: true; models: string[] } | { ok: false; error: string }
     >,
 
-  // --- Hotkey (Ctrl+Space, intercepted at Electron level) ---
+  // --- Hotkey (intercepted at Electron level, configurable) ---
   onToggleAIPanel: (callback: () => void) => {
     ipcRenderer.on('toggle-ai-panel', () => callback());
   },

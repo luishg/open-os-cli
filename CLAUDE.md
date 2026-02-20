@@ -161,6 +161,40 @@ Requirements for Flathub submission:
 - Inline AI mode has visual separators (opening with "open-os" label, closing plain line) drawn with `─` (U+2500) using `term.cols` for dynamic width. The separator color matches the brand dodger blue.
 - Inline prompt history: `inlineHistory[]` stores submitted prompts in memory (session-scoped). Arrow Up/Down navigates the history. `inlineHistoryStash` preserves the current input when the user starts navigating, restoring it when they arrow back past the newest entry. Consecutive duplicates are skipped. This is independent of the shell's own history — it only applies inside the `input` state of the inline AI mode.
 
+### Configuration system
+
+Settings live at `~/.config/open-os-cli/config.conf` in Ghostty/Kitty-style key-value format (`key = value`, `#` comments). This format was chosen over JSON because: (1) `.conf` has MIME type `text/plain`, so `xdg-open` opens it in a text editor (not a browser), (2) it supports comments, and (3) it matches what most popular Linux terminals use (Ghostty, Kitty, Foot).
+
+**Config format example:**
+```conf
+# Font
+font-family = "Cascadia Code", monospace
+font-size = 14
+# Cursor
+cursor-blink = true
+cursor-style = block
+```
+
+**Config lifecycle:**
+1. `loadConfigRaw()` reads `.conf` file via `parseConfFile()` → returns flat `Record<string, string>`.
+2. `resolveConfig()` maps flat keys to typed `ResolvedConfig` with validation (clamped numbers, enum-checked strings, boolean parsing). Returns fully-typed object — no optional fields, always safe to use.
+3. `config:get` IPC handler returns `resolveConfig()` — the renderer always gets a complete config.
+4. `config:save-model` uses `saveConfigKey()` which preserves existing file content (comments, other keys) and only updates the specific key.
+
+**Migration:** On first startup, `migrateJsonConfig()` checks for an old `config.json` and migrates the `model` field to `config.conf`. The old JSON file is left in place for safety.
+
+**Theme system:** Theme files at `~/.config/open-os-cli/themes/{name}.json` are referenced by name via `theme = name` in config. `loadTheme(name)` reads and merges with `DEFAULT_THEME`. If the file is missing or invalid, `DEFAULT_THEME` is returned silently. Theme colors are split into `terminal` (xterm.js ITheme fields) and `ui` (CSS custom properties for panel, hint bar, and accent colors). Themes stay as JSON because they're structured data not frequently hand-edited.
+
+**Keybinding system:** `keybind-ai-trigger` is a human-readable string (e.g., `Ctrl+Space`, `Ctrl+Shift+A`). `parseKeybinding()` converts it to `{ control, shift, alt, meta, code }` matching Electron's `before-input-event` API. The renderer displays the configured trigger label in the welcome message, hint bar, and onboarding text via `getAiTriggerLabel()`.
+
+**Config application in renderer:** `applyConfig()` runs during startup (before `showWelcome()`). It applies:
+- Font, cursor, scrollback → `term.options.*`
+- Terminal theme colors → `term.options.theme`
+- Padding → inline style on `#terminal` element (overrides CSS default)
+- UI theme → CSS custom properties (`--body-bg`, `--panel-bg`, `--accent`, etc.) on `:root`
+
+**Opening config:** "Settings" in the right-click context menu and the gear icon in the AI panel header both call `openConfigFile()`, which ensures the config file exists (writes all defaults if missing, preserves existing values) and opens it with a platform-specific text editor: `open -t` on macOS, `$VISUAL`/`$EDITOR`/`xdg-open` on Linux, `shell.openPath()` on Windows.
+
 ### Structured AI responses (JSON format)
 
 The Ollama request includes `format: "json"`, which constrains the model to produce valid JSON. The system prompt instructs the LLM to respond with:
