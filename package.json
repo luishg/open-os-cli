@@ -1,6 +1,6 @@
 {
   "name": "open-os-cli",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Simple terminal. Smart assistance.",
   "main": "dist/main.js",
   "license": "MIT",
@@ -43,7 +43,8 @@
       "target": [
         "AppImage",
         "pacman",
-        "deb"
+        "deb",
+        "rpm"
       ],
       "category": "System",
       "executableName": "open-os-cli"
@@ -68,6 +69,14 @@
         "gtk3",
         "nss",
         "libxss",
+        "libnotify"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "libXScrnSaver",
         "libnotify"
       ]
     }

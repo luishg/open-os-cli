@@ -32,10 +32,10 @@ jobs:
         with:
           node-version: 20
 
-      # Linux: bsdtar needed for pacman target
+      # Linux: bsdtar for pacman, rpmbuild for rpm
       - name: Install Linux build deps
         if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools rpm
 
       # macOS: Python needed for node-gyp (node-pty)
       - name: Install macOS build deps
@@ -70,6 +70,7 @@ jobs:
             release/*.AppImage
             release/*.pacman
             release/*.deb
+            release/*.rpm
             release/*.dmg
             release/*.exe
           if-no-files-found: error

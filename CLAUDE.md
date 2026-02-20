@@ -15,6 +15,7 @@ This runs esbuild (TypeScript bundling) followed by electron-builder. Output goe
 | `open-os-cli-{version}.AppImage` | AppImage | Portable executable, works on any Linux distro |
 | `open-os-cli-{version}.pacman` | pacman | Native Arch Linux package |
 | `open-os-cli_{version}_amd64.deb` | deb | Debian / Ubuntu package |
+| `open-os-cli-{version}.x86_64.rpm` | rpm | Fedora / RHEL package |
 
 ### Adding more targets
 
@@ -39,7 +40,8 @@ Available targets: `AppImage`, `deb`, `rpm`, `pacman`, `snap`, `flatpak`. See [e
 2. `npm run dist`
 3. Test the AppImage: `chmod +x release/open-os-cli-*.AppImage && ./release/open-os-cli-*.AppImage`
 4. Test the pacman: `sudo pacman -U release/open-os-cli-*.pacman && open-os-cli`
-5. Create a GitHub Release, attach the binaries from `release/`
+5. Test the rpm: `sudo dnf install release/open-os-cli-*.x86_64.rpm && open-os-cli`
+6. Create a GitHub Release, attach the binaries from `release/`
 
 ---
 
@@ -57,7 +59,7 @@ Pushing a tag matching `v*` (e.g. `git tag v0.5.0 && git push origin v0.5.0`).
 
 | Runner | Platform | Targets | Output |
 |---|---|---|---|
-| `ubuntu-latest` | Linux | AppImage, pacman, deb | `.AppImage`, `.pacman`, `.deb` |
+| `ubuntu-latest` | Linux | AppImage, pacman, deb, rpm | `.AppImage`, `.pacman`, `.deb`, `.rpm` |
 | `macos-latest` | macOS | dmg (universal) | `.dmg` (arm64 + x64) |
 | `windows-latest` | Windows | nsis | `.exe` installer |
 
@@ -67,7 +69,7 @@ Pushing a tag matching `v*` (e.g. `git tag v0.5.0 && git push origin v0.5.0`).
 
 Each runner installs what it needs before `npm install`:
 
-- **Linux**: `libarchive-tools` — provides `bsdtar`, required by `fpm` to build `.pacman` packages.
+- **Linux**: `libarchive-tools` — provides `bsdtar`, required by `fpm` to build `.pacman` packages. `rpm` — provides `rpmbuild`, required by `fpm` to build `.rpm` packages.
 - **macOS**: Python via `actions/setup-python` + `pip install setuptools` — required by `node-gyp` to compile the native `node-pty` module. Python 3.12 removed `distutils`; `setuptools` restores it.
 - **Windows**: `windows-build-tools` — provides MSVC build tools for `node-gyp`.
 
