@@ -16,15 +16,20 @@ import * as http from 'http';
 import { execSync, spawn } from 'child_process';
 
 let mainWindow: BrowserWindow;
-let shell: pty.IPty;
 
 // Conversation history for Ollama multi-turn context
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
-const conversationHistory: ChatMessage[] = [];
 const MAX_HISTORY_MESSAGES = 20; // 10 exchanges (user + assistant pairs)
+
+// Per-tab state: each tab has its own PTY and conversation history
+interface TabState {
+  shell: pty.IPty;
+  conversationHistory: ChatMessage[];
+}
+const tabs = new Map<string, TabState>();
 
 // ============================================================
 // CONFIG
@@ -448,6 +453,11 @@ function createWindow(): void {
   mainWindow.webContents.on('context-menu', () => {
     const menu = Menu.buildFromTemplate([
       {
+        label: 'New Tab',
+        click: () => mainWindow.webContents.send('tab:new-request'),
+      },
+      { type: 'separator' },
+      {
         label: 'Copy',
         click: () => mainWindow.webContents.send('term:copy'),
       },
@@ -474,17 +484,17 @@ function createWindow(): void {
 }
 
 // ============================================================
-// 2. PTY (terminal shell)
+// 2. PTY (terminal shell) — per-tab
 // node-pty spawns a real shell (bash/zsh/fish) in a PTY.
-// We pipe data between the PTY and the renderer (xterm.js).
+// Each tab gets its own PTY and conversation history.
 // ============================================================
 
-function createPty(): void {
+function createTab(tabId: string): void {
   const isWin = os.platform() === 'win32';
   const defaultShell = isWin ? 'powershell.exe' : process.env.SHELL || 'bash';
   const shellArgs = isWin ? ['-NoLogo'] : [];
 
-  shell = pty.spawn(defaultShell, shellArgs, {
+  const tabShell = pty.spawn(defaultShell, shellArgs, {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
@@ -492,18 +502,30 @@ function createPty(): void {
     env: process.env as { [key: string]: string },
   });
 
-  // PTY output → renderer (xterm.js will display it)
-  shell.onData((data: string) => {
+  const tabState: TabState = { shell: tabShell, conversationHistory: [] };
+  tabs.set(tabId, tabState);
+
+  // PTY output → renderer (tagged with tabId)
+  tabShell.onData((data: string) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('pty:data', data);
+      mainWindow.webContents.send('pty:data', tabId, data);
     }
   });
 
-  shell.onExit(({ exitCode }) => {
+  tabShell.onExit(({ exitCode }) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('pty:exit', exitCode);
+      mainWindow.webContents.send('pty:exit', tabId, exitCode);
     }
+    tabs.delete(tabId);
   });
+}
+
+function destroyTab(tabId: string): void {
+  const tab = tabs.get(tabId);
+  if (tab) {
+    tab.shell.kill();
+    tabs.delete(tabId);
+  }
 }
 
 // ============================================================
@@ -578,31 +600,35 @@ Use an empty commands array when no commands are needed.
 Warn before dangerous commands (rm -rf, dd, mkfs…).`;
 }
 
-function queryOllama(prompt: string, context: string): void {
+function queryOllama(tabId: string, prompt: string, context: string): void {
   const config = resolveConfig();
   const model = config.model;
+  const tab = tabs.get(tabId);
 
   if (!model) {
     const trigger = config.keybindings.aiTrigger;
-    mainWindow.webContents.send('ai:error', `No model selected. Press ${trigger} to configure.`);
+    mainWindow.webContents.send('ai:error', tabId, `No model selected. Press ${trigger} to configure.`);
     return;
   }
+
+  // Use per-tab conversation history (fall back to empty if tab was closed)
+  const history = tab?.conversationHistory ?? [];
 
   // Build user message and add to conversation history
   const userContent = context
     ? `Terminal context:\n\`\`\`\n${context}\n\`\`\`\n\n${prompt}`
     : prompt;
 
-  conversationHistory.push({ role: 'user', content: userContent });
+  history.push({ role: 'user', content: userContent });
 
   // Trim oldest messages to stay within budget
-  while (conversationHistory.length > MAX_HISTORY_MESSAGES) {
-    conversationHistory.shift();
+  while (history.length > MAX_HISTORY_MESSAGES) {
+    history.shift();
   }
 
   const messages = [
     { role: 'system', content: buildSystemPrompt() },
-    ...conversationHistory,
+    ...history,
   ];
 
   const body = JSON.stringify({
@@ -640,14 +666,14 @@ function queryOllama(prompt: string, context: string): void {
             const json = JSON.parse(line);
             if (json.message?.content) {
               currentAssistantResponse += json.message.content;
-              mainWindow.webContents.send('ai:chunk', json.message.content);
+              mainWindow.webContents.send('ai:chunk', tabId, json.message.content);
             }
             if (json.done && !doneSent) {
               doneSent = true;
               if (currentAssistantResponse) {
-                conversationHistory.push({ role: 'assistant', content: currentAssistantResponse });
+                history.push({ role: 'assistant', content: currentAssistantResponse });
               }
-              mainWindow.webContents.send('ai:done');
+              mainWindow.webContents.send('ai:done', tabId);
             }
           } catch {
             // Incomplete JSON line — will be completed in the next chunk
@@ -660,9 +686,9 @@ function queryOllama(prompt: string, context: string): void {
         if (!doneSent) {
           doneSent = true;
           if (currentAssistantResponse) {
-            conversationHistory.push({ role: 'assistant', content: currentAssistantResponse });
+            history.push({ role: 'assistant', content: currentAssistantResponse });
           }
-          mainWindow.webContents.send('ai:done');
+          mainWindow.webContents.send('ai:done', tabId);
         }
       });
     },
@@ -670,16 +696,16 @@ function queryOllama(prompt: string, context: string): void {
 
   req.on('error', (err: Error) => {
     // Roll back the user message since the request failed
-    const lastIdx = conversationHistory.length - 1;
-    if (lastIdx >= 0 && conversationHistory[lastIdx].role === 'user') {
-      conversationHistory.pop();
+    const lastIdx = history.length - 1;
+    if (lastIdx >= 0 && history[lastIdx].role === 'user') {
+      history.pop();
     }
 
     const message =
       err.message.includes('ECONNREFUSED')
         ? `Cannot connect to Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}. Is Ollama running?`
         : err.message;
-    mainWindow.webContents.send('ai:error', message);
+    mainWindow.webContents.send('ai:error', tabId, message);
   });
 
   req.write(body);
@@ -692,28 +718,39 @@ function queryOllama(prompt: string, context: string): void {
 // ============================================================
 
 function setupIPC(): void {
-  // --- PTY ---
-  ipcMain.on('pty:write', (_event, data: string) => {
-    shell.write(data);
+  // --- Tab lifecycle ---
+  ipcMain.on('tab:create', (_event, tabId: string) => {
+    createTab(tabId);
   });
 
-  ipcMain.on('pty:resize', (_event, size: { cols: number; rows: number }) => {
-    shell.resize(size.cols, size.rows);
+  ipcMain.on('tab:close', (_event, tabId: string) => {
+    destroyTab(tabId);
   });
 
-  // --- AI ---
-  ipcMain.on('ai:query', (_event, payload: { prompt: string; context: string }) => {
-    queryOllama(payload.prompt, payload.context);
+  // --- PTY (tab-aware) ---
+  ipcMain.on('pty:write', (_event, tabId: string, data: string) => {
+    tabs.get(tabId)?.shell.write(data);
   });
 
-  // --- Filesystem tab-completion for inline AI prompt ---
-  ipcMain.handle('fs:complete', (_event, partial: string) => {
+  ipcMain.on('pty:resize', (_event, size: { tabId: string; cols: number; rows: number }) => {
+    tabs.get(size.tabId)?.shell.resize(size.cols, size.rows);
+  });
+
+  // --- AI (tab-aware) ---
+  ipcMain.on('ai:query', (_event, payload: { tabId: string; prompt: string; context: string }) => {
+    queryOllama(payload.tabId, payload.prompt, payload.context);
+  });
+
+  // --- Filesystem tab-completion for inline AI prompt (tab-aware) ---
+  ipcMain.handle('fs:complete', (_event, tabId: string, partial: string) => {
+    const tab = tabs.get(tabId);
     let cwd: string;
     try {
+      if (!tab) throw new Error('tab not found');
       if (os.platform() === 'linux') {
-        cwd = fs.readlinkSync(`/proc/${shell.pid}/cwd`);
+        cwd = fs.readlinkSync(`/proc/${tab.shell.pid}/cwd`);
       } else if (os.platform() === 'darwin') {
-        cwd = execSync(`lsof -p ${shell.pid} -Fn | grep '^fcwd$' -A1 | grep '^n' | cut -c2-`,
+        cwd = execSync(`lsof -p ${tab.shell.pid} -Fn | grep '^fcwd$' -A1 | grep '^n' | cut -c2-`,
           { encoding: 'utf-8' }).trim();
         if (!cwd) throw new Error('lsof returned empty');
       } else {
@@ -802,11 +839,14 @@ function migrateJsonConfig(): void {
 app.whenReady().then(() => {
   migrateJsonConfig();
   createWindow();
-  createPty();
   setupIPC();
+  // No PTY created here — the renderer requests the first tab via tab:create
 });
 
 app.on('window-all-closed', () => {
-  shell?.kill();
+  for (const [, tab] of tabs) {
+    tab.shell.kill();
+  }
+  tabs.clear();
   app.quit();
 });

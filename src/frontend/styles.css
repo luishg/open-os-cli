@@ -16,17 +16,119 @@ body {
   flex-direction: column;
 }
 
-/* --- Terminal: fills the window ----------------------------- */
+/* --- Tab bar: top strip ------------------------------------ */
 
-#terminal {
+#tab-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  background: var(--hint-bar-bg, #0a1628);
+  border-bottom: 1px solid #112240;
+  font-family: monospace;
+  font-size: 12px;
+  user-select: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#tab-bar::-webkit-scrollbar { display: none; }
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  color: var(--hint-bar-color, #3a5a7c);
+  cursor: pointer;
+  border-right: 1px solid #112240;
+  white-space: nowrap;
+  transition: color 0.2s, background 0.2s;
+}
+
+.tab:hover {
+  color: #e0e0e0;
+  background: #112240;
+}
+
+.tab.active {
+  color: #e0e0e0;
+  background: var(--body-bg, #1a1a2e);
+  border-bottom: 2px solid var(--accent, #00b4d8);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.tab-close {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 0.6;
+}
+
+.tab-close:hover {
+  opacity: 1 !important;
+  color: #ff6b6b;
+}
+
+/* Hide close button when only 1 tab exists */
+#tab-bar[data-tab-count="1"] .tab-close {
+  display: none;
+}
+
+#tab-add {
+  background: none;
+  border: none;
+  color: var(--hint-bar-color, #3a5a7c);
+  font-size: 16px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+#tab-add:hover {
+  color: var(--accent, #00b4d8);
+}
+
+/* --- Terminal container: holds per-tab terminal panes ------ */
+
+#terminal-container {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  padding: 16px 20px 24px;   /* extra bottom padding avoids last row clipping behind hint bar */
+  position: relative;
+}
+
+.terminal-pane {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  display: none;
+  padding: 16px 20px 24px;
+}
+
+.terminal-pane.active {
+  display: block;
 }
 
 /* Prevent xterm canvas from overflowing padding on the right side */
-#terminal .xterm { overflow: hidden; }
+.terminal-pane .xterm { overflow: hidden; }
 
 /* Hide xterm.js scrollbar — scroll via mouse wheel / Shift+PgUp like standard terminals */
 .xterm-viewport::-webkit-scrollbar { display: none; }

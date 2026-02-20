@@ -1,11 +1,12 @@
 // ============================================================
 // RENDERER — runs in the Electron browser context
 //
-// This file does four things:
-//   1. Sets up xterm.js and connects it to the PTY (via IPC)
+// This file does five things:
+//   1. Manages TABS (each with its own xterm.js + PTY)
 //   2. Manages INLINE AI mode (Ctrl+Space — AI right in the terminal)
 //   3. Manages the open-os PANEL overlay (click hint bar)
-//   4. Routes AI responses to whichever mode initiated the query
+//   4. Routes AI responses to the correct tab
+//   5. Applies config/theme across all tabs
 //
 // The renderer NEVER talks to Ollama directly.
 // It sends queries via electronAPI → main process → Ollama.
@@ -50,17 +51,26 @@ interface ThemeColors {
 declare global {
   interface Window {
     electronAPI: {
-      ptyWrite: (data: string) => void;
-      ptyResize: (cols: number, rows: number) => void;
-      onPtyData: (callback: (data: string) => void) => void;
-      onPtyExit: (callback: (code: number) => void) => void;
-      aiQuery: (prompt: string, context: string) => void;
-      onAiChunk: (callback: (chunk: string) => void) => void;
-      onAiDone: (callback: () => void) => void;
-      onAiError: (callback: (error: string) => void) => void;
-      fsComplete: (partial: string) => Promise<string[]>;
+      // PTY (tab-aware)
+      ptyWrite: (tabId: string, data: string) => void;
+      ptyResize: (tabId: string, cols: number, rows: number) => void;
+      onPtyData: (callback: (tabId: string, data: string) => void) => void;
+      onPtyExit: (callback: (tabId: string, code: number) => void) => void;
+      // Tab lifecycle
+      tabCreate: (tabId: string) => void;
+      tabClose: (tabId: string) => void;
+      onTabNewRequest: (callback: () => void) => void;
+      // AI (tab-aware)
+      aiQuery: (tabId: string, prompt: string, context: string) => void;
+      onAiChunk: (callback: (tabId: string, chunk: string) => void) => void;
+      onAiDone: (callback: (tabId: string) => void) => void;
+      onAiError: (callback: (tabId: string, error: string) => void) => void;
+      // Filesystem tab-completion (tab-aware)
+      fsComplete: (tabId: string, partial: string) => Promise<string[]>;
+      // App info
       getVersion: () => Promise<string>;
       getPlatform: () => string;
+      // Config & Ollama
       configGet: () => Promise<AppConfigResolved>;
       configGetTheme: () => Promise<ThemeColors>;
       configOpen: () => Promise<void>;
@@ -68,6 +78,7 @@ declare global {
       ollamaListModels: () => Promise<
         { ok: true; models: string[] } | { ok: false; error: string }
       >;
+      // Hotkey & context menu
       onToggleAIPanel: (callback: () => void) => void;
       onTermCopy: (callback: () => void) => void;
       onTermPaste: (callback: (text: string) => void) => void;
@@ -78,6 +89,10 @@ declare global {
 
 // Module-level resolved config (populated during startup)
 let appConfig: AppConfigResolved | null = null;
+
+// Cached config/theme for applying to new tabs
+let cachedConfig: AppConfigResolved | null = null;
+let cachedTheme: ThemeColors | null = null;
 
 // ============================================================
 // ANSI styles for inline mode
@@ -99,22 +114,22 @@ const S = {
 };
 
 // ============================================================
-// INLINE SEPARATORS
+// INLINE SEPARATORS (per-tab)
 // ============================================================
 
-function inlineSeparatorOpen(): void {
+function inlineSeparatorOpen(tab: TabInstance): void {
   const label = ' open-os ';
-  const totalWidth = term.cols;
+  const totalWidth = tab.term.cols;
   const sideLen = Math.max(1, Math.floor((totalWidth - label.length) / 2));
   const rightLen = Math.max(1, totalWidth - sideLen - label.length);
   const left = '─'.repeat(sideLen);
   const right = '─'.repeat(rightLen);
-  term.write(`\r\n\r\n${S.sep}${left}${S.brand}${label}${S.sep}${right}${S.reset}\r\n\r\n`);
+  tab.term.write(`\r\n\r\n${S.sep}${left}${S.brand}${label}${S.sep}${right}${S.reset}\r\n\r\n`);
 }
 
-function inlineSeparatorClose(): void {
-  const line = '─'.repeat(term.cols);
-  term.write(`\r\n${S.sep}${line}${S.reset}\r\n`);
+function inlineSeparatorClose(tab: TabInstance): void {
+  const line = '─'.repeat(tab.term.cols);
+  tab.term.write(`\r\n${S.sep}${line}${S.reset}\r\n`);
 }
 
 // ============================================================
@@ -172,26 +187,200 @@ function formatCommandPreview(cmd: string): string {
 }
 
 // ============================================================
-// 1. TERMINAL SETUP
-// Created with safe defaults — reconfigured after config loads via applyConfig()
+// 1. TAB SYSTEM
 // ============================================================
 
-const term = new Terminal({
-  fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
-  fontSize: 14,
-  cursorBlink: true,
-  theme: {
-    background: '#1a1a2e',
-    foreground: '#e0e0e0',
-    cursor: '#00b4d8',
-    selectionBackground: '#00b4d844',
-  },
-});
+type InlineState = 'idle' | 'input' | 'streaming' | 'approval';
 
-const fitAddon = new FitAddon();
-term.loadAddon(fitAddon);
-term.open(document.getElementById('terminal')!);
-fitAddon.fit();
+interface TabInstance {
+  id: string;
+  term: Terminal;
+  fitAddon: FitAddon;
+  paneEl: HTMLDivElement;
+  tabEl: HTMLDivElement;
+  // Per-tab inline AI state
+  inlineState: InlineState;
+  inlineInputBuffer: string;
+  inlineResponseBuffer: string;
+  inlineCommands: string[];
+  inlineCommandIndex: number;
+  inlineAcceptedCommands: string[];
+  inlineReviewBusy: boolean;
+  inlineHistory: string[];
+  inlineHistoryIndex: number;
+  inlineHistoryStash: string;
+  aiQuerySource: 'inline' | 'panel' | null;
+  tabCompletionBusy: boolean;
+  // Welcome/buffer
+  welcomeShown: boolean;
+  ptyBuffer: string[];
+  // Panel state per tab
+  panelSuggestedCommand: string;
+  panelResponseBuffer: string;
+  isStreaming: boolean;
+}
+
+const tabInstances = new Map<string, TabInstance>();
+let activeTabId = '';
+let nextTabId = 1;
+
+function updateTabBarCount(): void {
+  const bar = document.getElementById('tab-bar')!;
+  bar.dataset.tabCount = String(tabInstances.size);
+}
+
+function createTabInstance(): TabInstance {
+  const id = String(nextTabId++);
+
+  // --- DOM: tab bar entry ---
+  const tabEl = document.createElement('div');
+  tabEl.className = 'tab';
+  tabEl.dataset.tabId = id;
+
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'tab-title';
+  titleSpan.textContent = `Terminal ${id}`;
+  tabEl.appendChild(titleSpan);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'tab-close';
+  closeBtn.innerHTML = '&times;';
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeTab(id);
+  });
+  tabEl.appendChild(closeBtn);
+
+  tabEl.addEventListener('click', () => switchToTab(id));
+
+  // Insert before the "+" button
+  const addBtn = document.getElementById('tab-add')!;
+  addBtn.parentElement!.insertBefore(tabEl, addBtn);
+
+  // --- DOM: terminal pane ---
+  const paneEl = document.createElement('div');
+  paneEl.className = 'terminal-pane';
+  paneEl.dataset.tabId = id;
+  document.getElementById('terminal-container')!.appendChild(paneEl);
+
+  // --- xterm.js instance ---
+  const newTerm = new Terminal({
+    fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+    fontSize: 14,
+    cursorBlink: true,
+    theme: {
+      background: '#1a1a2e',
+      foreground: '#e0e0e0',
+      cursor: '#00b4d8',
+      selectionBackground: '#00b4d844',
+    },
+  });
+
+  const newFitAddon = new FitAddon();
+  newTerm.loadAddon(newFitAddon);
+  newTerm.open(paneEl);
+
+  const tab: TabInstance = {
+    id,
+    term: newTerm,
+    fitAddon: newFitAddon,
+    paneEl,
+    tabEl,
+    inlineState: 'idle',
+    inlineInputBuffer: '',
+    inlineResponseBuffer: '',
+    inlineCommands: [],
+    inlineCommandIndex: 0,
+    inlineAcceptedCommands: [],
+    inlineReviewBusy: false,
+    inlineHistory: [],
+    inlineHistoryIndex: -1,
+    inlineHistoryStash: '',
+    aiQuerySource: null,
+    tabCompletionBusy: false,
+    welcomeShown: false,
+    ptyBuffer: [],
+    panelSuggestedCommand: '',
+    panelResponseBuffer: '',
+    isStreaming: false,
+  };
+
+  tabInstances.set(id, tab);
+
+  // Wire keystrokes: inline handler or PTY
+  newTerm.onData((data) => {
+    if (tab.inlineState !== 'idle') {
+      handleInlineInput(tab, data);
+    } else {
+      window.electronAPI.ptyWrite(id, data);
+    }
+  });
+
+  // Tell main process to spawn PTY for this tab
+  window.electronAPI.tabCreate(id);
+
+  // Apply cached config to this terminal
+  if (cachedConfig && cachedTheme) {
+    applyConfigToTab(tab, cachedConfig, cachedTheme);
+  }
+
+  updateTabBarCount();
+  return tab;
+}
+
+function switchToTab(tabId: string): void {
+  if (tabId === activeTabId) return;
+  const prev = tabInstances.get(activeTabId);
+  const next = tabInstances.get(tabId);
+  if (!next) return;
+
+  // Deactivate previous
+  if (prev) {
+    prev.paneEl.classList.remove('active');
+    prev.tabEl.classList.remove('active');
+  }
+
+  // Activate next
+  next.paneEl.classList.add('active');
+  next.tabEl.classList.add('active');
+  activeTabId = tabId;
+
+  // Re-fit and sync
+  next.fitAddon.fit();
+  window.electronAPI.ptyResize(tabId, next.term.cols, next.term.rows);
+  next.term.focus();
+}
+
+function closeTab(tabId: string): void {
+  // Prevent closing the last tab
+  if (tabInstances.size <= 1) return;
+
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+
+  // Tell main process to kill the PTY
+  window.electronAPI.tabClose(tabId);
+
+  // Clean up DOM
+  tab.tabEl.remove();
+  tab.paneEl.remove();
+  tab.term.dispose();
+  tabInstances.delete(tabId);
+
+  // If we closed the active tab, switch to an adjacent one
+  if (activeTabId === tabId) {
+    const remaining = [...tabInstances.keys()];
+    switchToTab(remaining[remaining.length - 1]);
+  }
+
+  updateTabBarCount();
+}
+
+async function createAndSwitchNewTab(): Promise<void> {
+  const tab = createTabInstance();
+  switchToTab(tab.id);
+  await initTab(tab);
+}
 
 // ============================================================
 // CONFIG APPLICATION
@@ -199,33 +388,29 @@ fitAddon.fit();
 // to xterm.js options, terminal padding, and UI CSS variables.
 // ============================================================
 
-async function applyConfig(): Promise<void> {
-  const config = await window.electronAPI.configGet();
-  const theme = await window.electronAPI.configGetTheme();
-  appConfig = config;
+function applyConfigToTab(tab: TabInstance, config: AppConfigResolved, theme: ThemeColors): void {
+  tab.term.options.fontFamily = config.font.family;
+  tab.term.options.fontSize = config.font.size;
+  tab.term.options.cursorBlink = config.cursor.blink;
+  tab.term.options.cursorStyle = config.cursor.style;
+  tab.term.options.scrollback = config.window.scrollback;
 
-  // Font
-  term.options.fontFamily = config.font.family;
-  term.options.fontSize = config.font.size;
-
-  // Cursor
-  term.options.cursorBlink = config.cursor.blink;
-  term.options.cursorStyle = config.cursor.style;
-
-  // Scrollback
-  term.options.scrollback = config.window.scrollback;
-
-  // Terminal theme colors
   const termTheme: Record<string, string> = {};
   for (const [key, value] of Object.entries(theme.terminal)) {
     if (typeof value === 'string') termTheme[key] = value;
   }
-  term.options.theme = termTheme;
+  tab.term.options.theme = termTheme;
 
-  // Terminal padding — inline style overrides CSS default
-  const el = document.getElementById('terminal')!;
   const p = config.window.padding;
-  el.style.padding = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
+  tab.paneEl.style.padding = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
+}
+
+async function applyConfig(): Promise<void> {
+  const config = await window.electronAPI.configGet();
+  const theme = await window.electronAPI.configGetTheme();
+  appConfig = config;
+  cachedConfig = config;
+  cachedTheme = theme;
 
   // UI theme — CSS custom properties on :root
   const root = document.documentElement;
@@ -238,7 +423,12 @@ async function applyConfig(): Promise<void> {
   root.style.setProperty('--accent', theme.ui.accent);
   document.body.style.background = theme.ui.background;
 
-  // Re-fit after font/padding changes
+  // Apply to all existing tabs
+  for (const tab of tabInstances.values()) {
+    applyConfigToTab(tab, config, theme);
+  }
+
+  // Re-fit active tab
   fitTerminal();
 }
 
@@ -247,18 +437,15 @@ function getAiTriggerLabel(): string {
 }
 
 // ============================================================
-// WELCOME MESSAGE
+// WELCOME MESSAGE & INIT (per-tab)
 // ============================================================
 
-let welcomeShown = false;
-let ptyBuffer: string[] = [];
-
-function showWelcome(version: string): void {
+function showWelcome(tab: TabInstance, version: string): void {
   const b = S.brand;
   const d = S.gray;
   const r = S.reset;
 
-  term.write(
+  tab.term.write(
     [
       '',
       `${b} ░███████  ░████████   ░███████  ░████████           ░███████   ░███████${r}`,
@@ -276,17 +463,8 @@ function showWelcome(version: string): void {
   );
 }
 
-// Buffer PTY data until welcome is shown
-window.electronAPI.onPtyData((data) => {
-  if (!welcomeShown) {
-    ptyBuffer.push(data);
-  } else {
-    term.write(data);
-  }
-});
-
 // Onboarding intro — shown when Ollama is not running or no model is configured
-async function showOnboarding(): Promise<void> {
+async function showOnboarding(tab: TabInstance): Promise<void> {
   const b = S.brand;
   const d = S.gray;
   const w = S.white;
@@ -338,151 +516,128 @@ async function showOnboarding(): Promise<void> {
     lines.push('');
   }
 
-  term.write(lines.join('\r\n') + '\r\n');
+  tab.term.write(lines.join('\r\n') + '\r\n');
 }
 
-// Apply config, show welcome, then flush buffered PTY data
-window.electronAPI
-  .getVersion()
-  .catch(() => '0.0.0')
-  .then(async (version) => {
-    await applyConfig().catch(() => {}); // continue even if config fails
-    showWelcome(version);
-    await showOnboarding();
-    welcomeShown = true;
+async function initTab(tab: TabInstance): Promise<void> {
+  const version = await window.electronAPI.getVersion().catch(() => '0.0.0');
+  showWelcome(tab, version);
+  await showOnboarding(tab);
+  tab.welcomeShown = true;
 
-    const isWin = window.electronAPI.getPlatform() === 'win32';
-    if (isWin) {
-      // On Windows, PowerShell's initial prompt output contains escape
-      // sequences that overwrite our welcome banner. Discard the buffer
-      // and send Enter to regenerate a clean prompt below the welcome.
-      ptyBuffer = [];
-      window.electronAPI.ptyWrite('\r');
-    } else {
-      for (const data of ptyBuffer) {
-        term.write(data);
-      }
-      ptyBuffer = [];
-    }
-  });
-
-// Pipe: user keystrokes → PTY (or inline handler)
-term.onData((data) => {
-  if (inlineState !== 'idle') {
-    handleInlineInput(data);
+  const isWin = window.electronAPI.getPlatform() === 'win32';
+  if (isWin) {
+    tab.ptyBuffer = [];
+    window.electronAPI.ptyWrite(tab.id, '\r');
   } else {
-    window.electronAPI.ptyWrite(data);
+    for (const data of tab.ptyBuffer) {
+      tab.term.write(data);
+    }
+    tab.ptyBuffer = [];
+  }
+}
+
+// ============================================================
+// PTY DATA / EXIT ROUTING (tab-aware)
+// ============================================================
+
+window.electronAPI.onPtyData((tabId, data) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+  if (!tab.welcomeShown) {
+    tab.ptyBuffer.push(data);
+  } else {
+    tab.term.write(data);
   }
 });
 
-// Handle PTY exit
-window.electronAPI.onPtyExit(() => {
-  term.write('\r\n[Process exited]\r\n');
+window.electronAPI.onPtyExit((tabId) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+  tab.term.write('\r\n[Process exited]\r\n');
 });
 
-// Keep terminal size in sync
+// ============================================================
+// TERMINAL RESIZE
+// ============================================================
+
 function fitTerminal(): void {
-  fitAddon.fit();
-  window.electronAPI.ptyResize(term.cols, term.rows);
+  const tab = tabInstances.get(activeTabId);
+  if (!tab) return;
+  tab.fitAddon.fit();
+  window.electronAPI.ptyResize(tab.id, tab.term.cols, tab.term.rows);
 }
 window.addEventListener('resize', fitTerminal);
 setTimeout(fitTerminal, 100);
 
 // ResizeObserver: re-fit terminal whenever its container dimensions change
-// (handles hint bar show/hide, panel open/close, font loading reflow)
-const terminalContainer = document.getElementById('terminal')!;
+const terminalContainer = document.getElementById('terminal-container')!;
 const resizeObserver = new ResizeObserver(() => fitTerminal());
 resizeObserver.observe(terminalContainer);
 
 // ============================================================
-// 2. INLINE AI MODE
+// 2. INLINE AI MODE (per-tab)
 //
 // Ctrl+Space enters "AI mode" directly in the terminal.
-// A colored prompt appears ( open-os > ), the user types their
-// question, and the AI response streams inline with distinct
-// styling. After the response, approval options appear if
-// the AI suggested commands.
-//
 // States: idle → input → streaming → approval → idle
 // ============================================================
 
-type InlineState = 'idle' | 'input' | 'streaming' | 'approval';
-let inlineState: InlineState = 'idle';
-let inlineInputBuffer = '';
-let inlineResponseBuffer = '';
-let inlineCommands: string[] = [];
-let inlineCommandIndex = 0;
-let inlineAcceptedCommands: string[] = [];
+function enterInlineMode(tab: TabInstance): void {
+  if (tab.inlineState !== 'idle') return;
+  tab.inlineState = 'input';
+  tab.inlineInputBuffer = '';
+  tab.inlineResponseBuffer = '';
+  tab.inlineCommands = [];
+  tab.inlineCommandIndex = 0;
+  tab.inlineAcceptedCommands = [];
+  tab.inlineHistoryIndex = -1;
+  tab.inlineHistoryStash = '';
 
-// Inline prompt history (arrow up/down to navigate)
-const inlineHistory: string[] = [];
-let inlineHistoryIndex = -1;
-let inlineHistoryStash = '';
-
-// Which mode initiated the current AI query
-let aiQuerySource: 'inline' | 'panel' | null = null;
-
-function enterInlineMode(): void {
-  if (inlineState !== 'idle') return;
-  inlineState = 'input';
-  inlineInputBuffer = '';
-  inlineResponseBuffer = '';
-  inlineCommands = [];
-  inlineCommandIndex = 0;
-  inlineAcceptedCommands = [];
-  inlineHistoryIndex = -1;
-  inlineHistoryStash = '';
-
-  inlineSeparatorOpen();
-  term.write(`${S.prompt}open-os > ${S.input}`);
+  inlineSeparatorOpen(tab);
+  tab.term.write(`${S.prompt}open-os > ${S.input}`);
 }
 
-function handleInlineInput(data: string): void {
-  switch (inlineState) {
+function handleInlineInput(tab: TabInstance, data: string): void {
+  switch (tab.inlineState) {
     case 'input':
-      handleInlineTyping(data);
+      handleInlineTyping(tab, data);
       break;
     case 'streaming':
       if (data === '\x1b') {
-        term.write(`${S.reset}\r\n${S.error}[cancelled]${S.reset}\r\n`);
-        inlineSeparatorClose();
-        window.electronAPI.ptyWrite('\r');
-        resetInlineState();
+        tab.term.write(`${S.reset}\r\n${S.error}[cancelled]${S.reset}\r\n`);
+        inlineSeparatorClose(tab);
+        window.electronAPI.ptyWrite(tab.id, '\r');
+        resetInlineState(tab);
       }
       break;
     case 'approval':
-      handleInlineApproval(data);
+      handleInlineApproval(tab, data);
       break;
   }
 }
 
-function inlineReplaceInput(text: string): void {
-  // Erase current input on screen, then write new text
-  const eraseLen = inlineInputBuffer.length;
-  if (eraseLen > 0) term.write('\b \b'.repeat(eraseLen));
-  inlineInputBuffer = text;
-  if (text) term.write(text);
+function inlineReplaceInput(tab: TabInstance, text: string): void {
+  const eraseLen = tab.inlineInputBuffer.length;
+  if (eraseLen > 0) tab.term.write('\b \b'.repeat(eraseLen));
+  tab.inlineInputBuffer = text;
+  if (text) tab.term.write(text);
 }
 
-let tabCompletionBusy = false;
+function handleTabCompletion(tab: TabInstance): void {
+  if (tab.tabCompletionBusy) return;
 
-function handleTabCompletion(): void {
-  if (tabCompletionBusy) return;
-
-  // Extract the last whitespace-delimited word as the partial path
-  const match = inlineInputBuffer.match(/(\S+)$/);
+  const match = tab.inlineInputBuffer.match(/(\S+)$/);
   if (!match) return;
   const partial = match[1];
   const prefix = (partial.endsWith('/') || partial.endsWith('\\'))
     ? ''
     : partial.split(/[/\\]/).pop() || '';
 
-  tabCompletionBusy = true;
-  window.electronAPI.fsComplete(partial).then((matches) => {
-    tabCompletionBusy = false;
-    if (inlineState !== 'input' || matches.length === 0) return;
+  tab.tabCompletionBusy = true;
+  window.electronAPI.fsComplete(tab.id, partial).then((matches) => {
+    tab.tabCompletionBusy = false;
+    if (tab.inlineState !== 'input' || matches.length === 0) return;
 
-    // Find the longest common prefix across all matches
     let common = matches[0];
     for (let i = 1; i < matches.length; i++) {
       while (common && !matches[i].startsWith(common)) {
@@ -492,95 +647,93 @@ function handleTabCompletion(): void {
 
     const toAdd = common.slice(prefix.length);
     if (toAdd) {
-      inlineInputBuffer += toAdd;
-      term.write(S.input + toAdd);
+      tab.inlineInputBuffer += toAdd;
+      tab.term.write(S.input + toAdd);
     }
-  }).catch(() => { tabCompletionBusy = false; });
+  }).catch(() => { tab.tabCompletionBusy = false; });
 }
 
-function handleInlineTyping(data: string): void {
+function handleInlineTyping(tab: TabInstance, data: string): void {
   // Arrow up / arrow down — history navigation
   if (data === '\x1b[A') {
-    if (inlineHistory.length === 0) return;
-    if (inlineHistoryIndex === -1) {
-      inlineHistoryStash = inlineInputBuffer;
-      inlineHistoryIndex = inlineHistory.length - 1;
-    } else if (inlineHistoryIndex > 0) {
-      inlineHistoryIndex--;
+    if (tab.inlineHistory.length === 0) return;
+    if (tab.inlineHistoryIndex === -1) {
+      tab.inlineHistoryStash = tab.inlineInputBuffer;
+      tab.inlineHistoryIndex = tab.inlineHistory.length - 1;
+    } else if (tab.inlineHistoryIndex > 0) {
+      tab.inlineHistoryIndex--;
     } else {
       return;
     }
-    inlineReplaceInput(inlineHistory[inlineHistoryIndex]);
+    inlineReplaceInput(tab, tab.inlineHistory[tab.inlineHistoryIndex]);
     return;
   }
   if (data === '\x1b[B') {
-    if (inlineHistoryIndex === -1) return;
-    if (inlineHistoryIndex < inlineHistory.length - 1) {
-      inlineHistoryIndex++;
-      inlineReplaceInput(inlineHistory[inlineHistoryIndex]);
+    if (tab.inlineHistoryIndex === -1) return;
+    if (tab.inlineHistoryIndex < tab.inlineHistory.length - 1) {
+      tab.inlineHistoryIndex++;
+      inlineReplaceInput(tab, tab.inlineHistory[tab.inlineHistoryIndex]);
     } else {
-      inlineHistoryIndex = -1;
-      inlineReplaceInput(inlineHistoryStash);
+      tab.inlineHistoryIndex = -1;
+      inlineReplaceInput(tab, tab.inlineHistoryStash);
     }
     return;
   }
 
   if (data === '\t') {
-    handleTabCompletion();
+    handleTabCompletion(tab);
     return;
   }
 
   if (data === '\r') {
-    term.write(S.reset);
-    submitInlineQuery();
+    tab.term.write(S.reset);
+    submitInlineQuery(tab);
   } else if (data === '\x7f' || data === '\b') {
-    if (inlineInputBuffer.length > 0) {
-      inlineInputBuffer = inlineInputBuffer.slice(0, -1);
-      term.write('\b \b');
+    if (tab.inlineInputBuffer.length > 0) {
+      tab.inlineInputBuffer = tab.inlineInputBuffer.slice(0, -1);
+      tab.term.write('\b \b');
     }
   } else if (data === '\x1b' || data === '\x03') {
-    term.write(S.reset);
-    exitInlineMode();
+    tab.term.write(S.reset);
+    exitInlineMode(tab);
   } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
-    inlineInputBuffer += data;
-    term.write(data);
+    tab.inlineInputBuffer += data;
+    tab.term.write(data);
   }
 }
 
-function submitInlineQuery(): void {
-  const prompt = inlineInputBuffer.trim();
+function submitInlineQuery(tab: TabInstance): void {
+  const prompt = tab.inlineInputBuffer.trim();
   if (!prompt) {
-    exitInlineMode();
+    exitInlineMode(tab);
     return;
   }
 
   // Save to history (avoid consecutive duplicates)
-  if (inlineHistory.length === 0 || inlineHistory[inlineHistory.length - 1] !== prompt) {
-    inlineHistory.push(prompt);
+  if (tab.inlineHistory.length === 0 || tab.inlineHistory[tab.inlineHistory.length - 1] !== prompt) {
+    tab.inlineHistory.push(prompt);
   }
-  inlineHistoryIndex = -1;
-  inlineHistoryStash = '';
+  tab.inlineHistoryIndex = -1;
+  tab.inlineHistoryStash = '';
 
-  inlineState = 'streaming';
-  aiQuerySource = 'inline';
-  inlineResponseBuffer = '';
+  tab.inlineState = 'streaming';
+  tab.aiQuerySource = 'inline';
+  tab.inlineResponseBuffer = '';
 
-  term.write(`\r\n${S.dim}...${S.reset}`);
+  tab.term.write(`\r\n${S.dim}...${S.reset}`);
 
-  const context = captureTerminalContext();
-  window.electronAPI.aiQuery(prompt, context);
+  const context = captureTerminalContext(tab);
+  window.electronAPI.aiQuery(tab.id, prompt, context);
 }
 
 // --- Multi-command: sequential review with immediate execution ---
 
-let inlineReviewBusy = false; // true while waiting between commands
-
-function showCommandReview(): void {
-  const i = inlineCommandIndex;
-  const total = inlineCommands.length;
-  const cmd = inlineCommands[i];
+function showCommandReview(tab: TabInstance): void {
+  const i = tab.inlineCommandIndex;
+  const total = tab.inlineCommands.length;
+  const cmd = tab.inlineCommands[i];
   const preview = formatCommandPreview(cmd);
-  term.write(
+  tab.term.write(
     `\r\n\r\n${S.gray}Command ${i + 1}/${total} ─${S.reset}\r\n  ${S.cmd}${preview}${S.reset}` +
     `\r\n${S.approval}  [R]un  [S]kip  [C]ancel${S.reset}`,
   );
@@ -588,100 +741,97 @@ function showCommandReview(): void {
 
 // --- Single command: insert / run / cancel ---
 
-function showCommandConfirm(): void {
-  const cmd = inlineAcceptedCommands[0];
+function showCommandConfirm(tab: TabInstance): void {
+  const cmd = tab.inlineAcceptedCommands[0];
   const preview = formatCommandPreview(cmd);
-  term.write(
+  tab.term.write(
     `\r\n\r\n${S.gray}►${S.reset}\r\n  ${S.cmd}${preview}${S.reset}` +
     `\r\n${S.approval}  [I]nsert  [R]un  [C]ancel${S.reset}`,
   );
 }
 
-function advanceOrExit(): void {
-  inlineCommandIndex++;
-  if (inlineCommandIndex < inlineCommands.length) {
-    showCommandReview();
+function advanceOrExit(tab: TabInstance): void {
+  tab.inlineCommandIndex++;
+  if (tab.inlineCommandIndex < tab.inlineCommands.length) {
+    showCommandReview(tab);
   } else {
-    exitInlineMode();
+    exitInlineMode(tab);
   }
 }
 
-function handleInlineApproval(data: string): void {
-  if (inlineReviewBusy) return; // ignore input during transition
+function handleInlineApproval(tab: TabInstance, data: string): void {
+  if (tab.inlineReviewBusy) return;
   const key = data.toLowerCase();
 
   // Review phase (multi-command): run immediately or skip
-  if (inlineCommandIndex < inlineCommands.length) {
+  if (tab.inlineCommandIndex < tab.inlineCommands.length) {
     if (key === 'r') {
-      const cmd = inlineCommands[inlineCommandIndex];
-      term.write(`${S.reset}\r\n`);
-      inlineSeparatorClose();
-      window.electronAPI.ptyWrite('\r');
+      const cmd = tab.inlineCommands[tab.inlineCommandIndex];
+      tab.term.write(`${S.reset}\r\n`);
+      inlineSeparatorClose(tab);
+      window.electronAPI.ptyWrite(tab.id, '\r');
       setTimeout(() => {
-        window.electronAPI.ptyWrite(cmd.replace(/\n/g, '\r') + '\r');
-        inlineCommandIndex++;
-        if (inlineCommandIndex < inlineCommands.length) {
-          // Brief pause so command output can flush before next review
-          inlineReviewBusy = true;
+        window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r') + '\r');
+        tab.inlineCommandIndex++;
+        if (tab.inlineCommandIndex < tab.inlineCommands.length) {
+          tab.inlineReviewBusy = true;
           setTimeout(() => {
-            inlineReviewBusy = false;
-            inlineSeparatorOpen();
-            showCommandReview();
+            tab.inlineReviewBusy = false;
+            inlineSeparatorOpen(tab);
+            showCommandReview(tab);
           }, 500);
         } else {
-          resetInlineState();
+          resetInlineState(tab);
         }
       }, 50);
     } else if (key === 's') {
-      advanceOrExit();
+      advanceOrExit(tab);
     } else if (key === 'c' || data === '\x1b') {
-      exitInlineMode();
+      exitInlineMode(tab);
     }
     return;
   }
 
   // Confirm phase (single command): insert, run, or cancel
-  const cmd = inlineAcceptedCommands[0];
+  const cmd = tab.inlineAcceptedCommands[0];
 
   if (key === 'i') {
-    term.write(`${S.reset}\r\n`);
-    inlineSeparatorClose();
-    resetInlineState();
-    window.electronAPI.ptyWrite('\r');
-    setTimeout(() => window.electronAPI.ptyWrite(cmd.replace(/\n/g, '\r')), 50);
+    tab.term.write(`${S.reset}\r\n`);
+    inlineSeparatorClose(tab);
+    resetInlineState(tab);
+    window.electronAPI.ptyWrite(tab.id, '\r');
+    setTimeout(() => window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r')), 50);
   } else if (key === 'r') {
-    term.write(`${S.reset}\r\n`);
-    inlineSeparatorClose();
-    resetInlineState();
-    window.electronAPI.ptyWrite('\r');
-    setTimeout(() => window.electronAPI.ptyWrite(cmd.replace(/\n/g, '\r') + '\r'), 50);
+    tab.term.write(`${S.reset}\r\n`);
+    inlineSeparatorClose(tab);
+    resetInlineState(tab);
+    window.electronAPI.ptyWrite(tab.id, '\r');
+    setTimeout(() => window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r') + '\r'), 50);
   } else if (key === 'c' || data === '\x1b') {
-    exitInlineMode();
+    exitInlineMode(tab);
   }
 }
 
-function exitInlineMode(): void {
-  term.write(`${S.reset}\r\n`);
-  inlineSeparatorClose();
-  window.electronAPI.ptyWrite('\r');
-  resetInlineState();
+function exitInlineMode(tab: TabInstance): void {
+  tab.term.write(`${S.reset}\r\n`);
+  inlineSeparatorClose(tab);
+  window.electronAPI.ptyWrite(tab.id, '\r');
+  resetInlineState(tab);
 }
 
-function resetInlineState(): void {
-  inlineState = 'idle';
-  inlineInputBuffer = '';
-  inlineResponseBuffer = '';
-  inlineCommands = [];
-  inlineCommandIndex = 0;
-  inlineAcceptedCommands = [];
-  inlineReviewBusy = false;
-  aiQuerySource = null;
+function resetInlineState(tab: TabInstance): void {
+  tab.inlineState = 'idle';
+  tab.inlineInputBuffer = '';
+  tab.inlineResponseBuffer = '';
+  tab.inlineCommands = [];
+  tab.inlineCommandIndex = 0;
+  tab.inlineAcceptedCommands = [];
+  tab.inlineReviewBusy = false;
+  tab.aiQuerySource = null;
 }
 
 // ============================================================
-// 3. PANEL (overlay)
-//
-// Alternative to inline mode. Opened by clicking the hint bar.
+// 3. PANEL (overlay) — shared across tabs
 // ============================================================
 
 const aiPanel = document.getElementById('ai-panel')!;
@@ -735,7 +885,8 @@ function closeAIPanel(): void {
   hintBar.classList.remove('hidden');
   aiActions.classList.add('hidden');
   aiStatus.textContent = '';
-  term.focus();
+  const tab = tabInstances.get(activeTabId);
+  if (tab) tab.term.focus();
   fitTerminal();
 }
 
@@ -797,9 +948,6 @@ hintBar.addEventListener('click', () => {
 
 // ============================================================
 // 4. HOTKEY (configurable, default: Ctrl+Space)
-//
-// Primary action: toggle inline AI mode in the terminal.
-// If the panel is open, close it instead.
 // ============================================================
 
 window.electronAPI.onToggleAIPanel(async () => {
@@ -808,8 +956,11 @@ window.electronAPI.onToggleAIPanel(async () => {
     return;
   }
 
-  if (inlineState !== 'idle') {
-    exitInlineMode();
+  const tab = tabInstances.get(activeTabId);
+  if (!tab) return;
+
+  if (tab.inlineState !== 'idle') {
+    exitInlineMode(tab);
     return;
   }
 
@@ -821,15 +972,15 @@ window.electronAPI.onToggleAIPanel(async () => {
     return;
   }
 
-  enterInlineMode();
+  enterInlineMode(tab);
 });
 
 // ============================================================
-// 5. TERMINAL CONTEXT CAPTURE
+// 5. TERMINAL CONTEXT CAPTURE (per-tab)
 // ============================================================
 
-function captureTerminalContext(lineCount = 30): string {
-  const buffer = term.buffer.active;
+function captureTerminalContext(tab: TabInstance, lineCount = 30): string {
+  const buffer = tab.term.buffer.active;
   const totalLines = buffer.length;
   const start = Math.max(0, totalLines - lineCount);
   const lines: string[] = [];
@@ -842,27 +993,26 @@ function captureTerminalContext(lineCount = 30): string {
 }
 
 // ============================================================
-// 6. PANEL QUERY
+// 6. PANEL QUERY (uses active tab)
 // ============================================================
 
-let panelSuggestedCommand = '';
-let panelResponseBuffer = '';
-let isStreaming = false;
-
 function sendPanelQuery(): void {
-  const prompt = aiInput.value.trim();
-  if (!prompt || isStreaming) return;
+  const tab = tabInstances.get(activeTabId);
+  if (!tab) return;
 
-  isStreaming = true;
-  panelSuggestedCommand = '';
-  panelResponseBuffer = '';
+  const prompt = aiInput.value.trim();
+  if (!prompt || tab.isStreaming) return;
+
+  tab.isStreaming = true;
+  tab.panelSuggestedCommand = '';
+  tab.panelResponseBuffer = '';
   aiOutput.textContent = '';
   aiActions.classList.add('hidden');
   aiStatus.textContent = 'thinking...';
-  aiQuerySource = 'panel';
+  tab.aiQuerySource = 'panel';
 
-  const context = captureTerminalContext();
-  window.electronAPI.aiQuery(prompt, context);
+  const context = captureTerminalContext(tab);
+  window.electronAPI.aiQuery(tab.id, prompt, context);
 }
 
 aiSend.addEventListener('click', sendPanelQuery);
@@ -874,49 +1024,52 @@ aiInput.addEventListener('keydown', (e) => {
 });
 
 // ============================================================
-// 7. AI RESPONSE ROUTING
-//
-// Chunks, done, and errors are routed to whichever mode
-// (inline or panel) initiated the query.
+// 7. AI RESPONSE ROUTING (tab-aware)
 // ============================================================
 
-window.electronAPI.onAiChunk((chunk) => {
-  if (aiQuerySource === 'inline') {
-    inlineResponseBuffer += chunk;
-  } else if (aiQuerySource === 'panel') {
-    panelResponseBuffer += chunk;
+window.electronAPI.onAiChunk((tabId, chunk) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+
+  if (tab.aiQuerySource === 'inline') {
+    tab.inlineResponseBuffer += chunk;
+  } else if (tab.aiQuerySource === 'panel') {
+    tab.panelResponseBuffer += chunk;
     aiStatus.textContent = 'generating...';
   }
 });
 
-window.electronAPI.onAiDone(() => {
-  if (aiQuerySource === 'inline' && inlineState === 'streaming') {
-    const { text, commands } = parseAiResponse(inlineResponseBuffer);
+window.electronAPI.onAiDone((tabId) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+
+  if (tab.aiQuerySource === 'inline' && tab.inlineState === 'streaming') {
+    const { text, commands } = parseAiResponse(tab.inlineResponseBuffer);
 
     if (text) {
-      term.write(`\r\n${S.response}${text.replace(/\n/g, '\r\n')}${S.reset}`);
+      tab.term.write(`\r\n${S.response}${text.replace(/\n/g, '\r\n')}${S.reset}`);
     }
 
     if (commands.length === 0) {
-      exitInlineMode();
+      exitInlineMode(tab);
     } else if (commands.length === 1) {
-      inlineCommands = commands;
-      inlineCommandIndex = 1; // past review — go straight to confirm
-      inlineAcceptedCommands = commands.slice();
-      showCommandConfirm();
-      inlineState = 'approval';
+      tab.inlineCommands = commands;
+      tab.inlineCommandIndex = 1; // past review — go straight to confirm
+      tab.inlineAcceptedCommands = commands.slice();
+      showCommandConfirm(tab);
+      tab.inlineState = 'approval';
     } else {
-      inlineCommands = commands;
-      inlineCommandIndex = 0;
-      inlineAcceptedCommands = [];
-      showCommandReview();
-      inlineState = 'approval';
+      tab.inlineCommands = commands;
+      tab.inlineCommandIndex = 0;
+      tab.inlineAcceptedCommands = [];
+      showCommandReview(tab);
+      tab.inlineState = 'approval';
     }
-  } else if (aiQuerySource === 'panel') {
-    isStreaming = false;
+  } else if (tab.aiQuerySource === 'panel') {
+    tab.isStreaming = false;
     aiStatus.textContent = '';
 
-    const { text, commands } = parseAiResponse(panelResponseBuffer);
+    const { text, commands } = parseAiResponse(tab.panelResponseBuffer);
 
     let display = text;
     if (commands.length > 0) {
@@ -925,43 +1078,48 @@ window.electronAPI.onAiDone(() => {
     aiOutput.textContent = display;
 
     if (commands.length > 0) {
-      panelSuggestedCommand = commands.join('\n');
+      tab.panelSuggestedCommand = commands.join('\n');
       aiActions.classList.remove('hidden');
     }
-    aiQuerySource = null;
+    tab.aiQuerySource = null;
   }
 });
 
-window.electronAPI.onAiError((error) => {
-  if (aiQuerySource === 'inline') {
-    term.write(`\r\n${S.error}[Error] ${error}${S.reset}\r\n`);
-    inlineSeparatorClose();
-    window.electronAPI.ptyWrite('\r');
-    resetInlineState();
-  } else if (aiQuerySource === 'panel') {
-    isStreaming = false;
+window.electronAPI.onAiError((tabId, error) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+
+  if (tab.aiQuerySource === 'inline') {
+    tab.term.write(`\r\n${S.error}[Error] ${error}${S.reset}\r\n`);
+    inlineSeparatorClose(tab);
+    window.electronAPI.ptyWrite(tab.id, '\r');
+    resetInlineState(tab);
+  } else if (tab.aiQuerySource === 'panel') {
+    tab.isStreaming = false;
     aiStatus.textContent = '';
     aiOutput.textContent = `[Error] ${error}`;
-    aiQuerySource = null;
+    tab.aiQuerySource = null;
   }
 });
 
 // ============================================================
-// 8. PANEL ACTION HANDLERS
+// 8. PANEL ACTION HANDLERS (use active tab)
 // ============================================================
 
 aiActions.addEventListener('click', (e) => {
   const target = e.target as HTMLElement;
   const action = target.dataset.action;
-  if (!action || !panelSuggestedCommand) return;
+  const tab = tabInstances.get(activeTabId);
+  if (!action || !tab || !tab.panelSuggestedCommand) return;
+  const cmd = tab.panelSuggestedCommand;
 
   switch (action) {
     case 'insert':
-      window.electronAPI.ptyWrite(panelSuggestedCommand.replace(/\n/g, '\r'));
+      window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r'));
       closeAIPanel();
       break;
     case 'run':
-      window.electronAPI.ptyWrite(panelSuggestedCommand.replace(/\n/g, '\r') + '\r');
+      window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r') + '\r');
       closeAIPanel();
       break;
     case 'cancel':
@@ -975,26 +1133,31 @@ aiActions.addEventListener('click', (e) => {
 // ============================================================
 
 window.electronAPI.onTermCopy(() => {
-  const selection = term.getSelection();
+  const tab = tabInstances.get(activeTabId);
+  if (!tab) return;
+  const selection = tab.term.getSelection();
   if (selection) {
     navigator.clipboard.writeText(selection);
   }
 });
 
 window.electronAPI.onTermPaste((text) => {
-  if (inlineState === 'input') {
-    inlineInputBuffer += text;
-    term.write(S.input + text);
-  } else if (inlineState === 'idle') {
-    window.electronAPI.ptyWrite(text);
+  const tab = tabInstances.get(activeTabId);
+  if (!tab) return;
+  if (tab.inlineState === 'input') {
+    tab.inlineInputBuffer += text;
+    tab.term.write(S.input + text);
+  } else if (tab.inlineState === 'idle') {
+    window.electronAPI.ptyWrite(tab.id, text);
   }
 });
 
 window.electronAPI.onTermClear(() => {
-  term.clear();
-  // Clear visible screen and move cursor home, then request a fresh prompt
-  term.write('\x1b[2J\x1b[H');
-  window.electronAPI.ptyWrite('\r');
+  const tab = tabInstances.get(activeTabId);
+  if (!tab) return;
+  tab.term.clear();
+  tab.term.write('\x1b[2J\x1b[H');
+  window.electronAPI.ptyWrite(tab.id, '\r');
 });
 
 // ============================================================
@@ -1004,3 +1167,21 @@ window.electronAPI.onTermClear(() => {
 document.getElementById('ai-settings')!.addEventListener('click', () => {
   window.electronAPI.configOpen();
 });
+
+// ============================================================
+// 11. TAB CONTROLS — "+" button & context menu "New Tab"
+// ============================================================
+
+document.getElementById('tab-add')!.addEventListener('click', createAndSwitchNewTab);
+window.electronAPI.onTabNewRequest(() => createAndSwitchNewTab());
+
+// ============================================================
+// 12. STARTUP — create first tab
+// ============================================================
+
+(async () => {
+  await applyConfig().catch(() => {});
+  const firstTab = createTabInstance();
+  switchToTab(firstTab.id);
+  await initTab(firstTab);
+})();

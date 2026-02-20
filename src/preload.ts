@@ -10,33 +10,40 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // --- PTY (terminal shell) ---
-  ptyWrite: (data: string) => ipcRenderer.send('pty:write', data),
-  ptyResize: (cols: number, rows: number) =>
-    ipcRenderer.send('pty:resize', { cols, rows }),
-  onPtyData: (callback: (data: string) => void) => {
-    ipcRenderer.on('pty:data', (_event, data) => callback(data));
+  // --- PTY (terminal shell) — tab-aware ---
+  ptyWrite: (tabId: string, data: string) => ipcRenderer.send('pty:write', tabId, data),
+  ptyResize: (tabId: string, cols: number, rows: number) =>
+    ipcRenderer.send('pty:resize', { tabId, cols, rows }),
+  onPtyData: (callback: (tabId: string, data: string) => void) => {
+    ipcRenderer.on('pty:data', (_event, tabId, data) => callback(tabId, data));
   },
-  onPtyExit: (callback: (code: number) => void) => {
-    ipcRenderer.on('pty:exit', (_event, code) => callback(code));
-  },
-
-  // --- AI (Ollama streaming) ---
-  aiQuery: (prompt: string, context: string) =>
-    ipcRenderer.send('ai:query', { prompt, context }),
-  onAiChunk: (callback: (chunk: string) => void) => {
-    ipcRenderer.on('ai:chunk', (_event, chunk) => callback(chunk));
-  },
-  onAiDone: (callback: () => void) => {
-    ipcRenderer.on('ai:done', () => callback());
-  },
-  onAiError: (callback: (error: string) => void) => {
-    ipcRenderer.on('ai:error', (_event, error) => callback(error));
+  onPtyExit: (callback: (tabId: string, code: number) => void) => {
+    ipcRenderer.on('pty:exit', (_event, tabId, code) => callback(tabId, code));
   },
 
-  // --- Filesystem tab-completion ---
-  fsComplete: (partial: string) =>
-    ipcRenderer.invoke('fs:complete', partial) as Promise<string[]>,
+  // --- Tab lifecycle ---
+  tabCreate: (tabId: string) => ipcRenderer.send('tab:create', tabId),
+  tabClose: (tabId: string) => ipcRenderer.send('tab:close', tabId),
+  onTabNewRequest: (callback: () => void) => {
+    ipcRenderer.on('tab:new-request', () => callback());
+  },
+
+  // --- AI (Ollama streaming) — tab-aware ---
+  aiQuery: (tabId: string, prompt: string, context: string) =>
+    ipcRenderer.send('ai:query', { tabId, prompt, context }),
+  onAiChunk: (callback: (tabId: string, chunk: string) => void) => {
+    ipcRenderer.on('ai:chunk', (_event, tabId, chunk) => callback(tabId, chunk));
+  },
+  onAiDone: (callback: (tabId: string) => void) => {
+    ipcRenderer.on('ai:done', (_event, tabId) => callback(tabId));
+  },
+  onAiError: (callback: (tabId: string, error: string) => void) => {
+    ipcRenderer.on('ai:error', (_event, tabId, error) => callback(tabId, error));
+  },
+
+  // --- Filesystem tab-completion — tab-aware ---
+  fsComplete: (tabId: string, partial: string) =>
+    ipcRenderer.invoke('fs:complete', tabId, partial) as Promise<string[]>,
 
   // --- App info ---
   getVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,

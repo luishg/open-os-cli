@@ -8,8 +8,13 @@
 </head>
 <body>
 
-  <!-- Terminal: takes the full window -->
-  <div id="terminal"></div>
+  <!-- Tab bar -->
+  <div id="tab-bar">
+    <button id="tab-add" title="New Tab">+</button>
+  </div>
+
+  <!-- Terminal container: each tab creates a child .terminal-pane inside here -->
+  <div id="terminal-container"></div>
 
   <!-- Panel: slide-up overlay, toggled with Ctrl+Space or hint bar -->
   <div id="ai-panel">

@@ -13,6 +13,7 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 **open-os cli** is a terminal emulator with integrated AI assistance. It runs your shell normally and adds AI features that are explicit and approval-gated.
 
 - Full terminal emulator (bash/zsh/fish via PTY)
+- **Tabs** — open multiple independent terminals in one window, each with its own shell and AI context
 - Two AI interaction modes: **inline** (Ctrl+Space in the terminal) and **panel** (overlay UI)
 - Streaming responses from local LLMs via Ollama
 - Commands are never executed without explicit user approval
@@ -152,6 +153,14 @@ npm start          # builds TypeScript + launches the app
 
 ## Usage
 
+### Tabs
+
+Open multiple independent terminals in one window. Each tab has its own shell, AI conversation history, and inline AI state. The AI panel overlay is shared across tabs.
+
+- **New tab**: click the **+** button in the tab bar, or right-click → **New Tab**
+- **Switch tabs**: click on a tab
+- **Close tab**: click the **x** on a tab (hidden when only one tab remains)
+
 ### Inline mode (Ctrl+Space)
 Press **Ctrl+Space** anywhere in the terminal to enter AI mode:
 
@@ -191,38 +200,40 @@ Both modes automatically capture the last 30 lines of terminal output and includ
 
 ### Data flow
 
+Each tab has its own xterm.js terminal and PTY. All IPC messages include a `tabId` for routing.
+
 ```
-User types in xterm.js
+User types in xterm.js (Tab N)
         │
         ▼
-   [renderer.ts] ───IPC──► [main.ts] ───node-pty──► bash/zsh
-                                │                        │
-                                │                        ▼
-                                │                   shell output
-                                │                        │
-                            IPC (pty:data) ◄─────────────┘
-                                │
-                                ▼
-                           xterm.js displays output
+   [renderer.ts] ──IPC(tabId)──► [main.ts] ──node-pty──► bash/zsh
+                                      │                        │
+                                      │                        ▼
+                                      │                   shell output
+                                      │                        │
+                               IPC (pty:data, tabId) ◄─────────┘
+                                      │
+                                      ▼
+                              xterm.js (Tab N) displays output
 
 
 Ctrl+Space → inline mode / Click → panel mode
 User types question → Enter
         │
         ▼
-   [renderer.ts] ───IPC──► [main.ts] ───HTTP──► Ollama :11434
-                                │                     │  (format: json)
-                            IPC (ai:chunk) ◄──────────┘
-                                │                (streaming)
-                                ▼
-                    JSON parsed: {text, commands[]}
-                    Text displayed, commands shown for review
-                                │
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                  ▼
-      Single command    Multiple commands       No commands
-     [I]nsert [R]un    Sequential review:       exit mode
-     [C]ancel          [R]un [S]kip [C]ancel
+   [renderer.ts] ──IPC(tabId)──► [main.ts] ──HTTP──► Ollama :11434
+                                      │                     │  (format: json)
+                               IPC (ai:chunk, tabId) ◄─────┘
+                                      │                (streaming)
+                                      ▼
+                          JSON parsed: {text, commands[]}
+                          Text displayed, commands shown for review
+                                      │
+                    ┌─────────────────┼─────────────────┐
+                    ▼                 ▼                  ▼
+            Single command    Multiple commands       No commands
+           [I]nsert [R]un    Sequential review:       exit mode
+           [C]ancel          [R]un [S]kip [C]ancel
 ```
 
 ### Key design rule
@@ -245,9 +256,9 @@ open-os-cli/
 │   ├── main.ts           # Electron main: window + PTY + Ollama + config
 │   ├── preload.ts        # contextBridge: typed IPC API for renderer
 │   └── frontend/
-│       ├── index.html    # Layout: terminal + panel + hint bar
-│       ├── renderer.ts   # xterm.js, inline AI, panel, response routing
-│       └── styles.css    # Electric blue theme, animations
+│       ├── index.html    # Layout: tab bar + terminal container + panel + hint bar
+│       ├── renderer.ts   # Tab management, xterm.js, inline AI, panel, response routing
+│       └── styles.css    # Electric blue theme, tab bar, animations
 └── README.md
 ```
 
@@ -256,19 +267,20 @@ open-os-cli/
 | Concern | File |
 |---|---|
 | Window creation, menus, hotkeys | `main.ts` — `createWindow()` |
-| PTY spawn and pipe | `main.ts` — `createPty()` |
-| Ollama HTTP streaming | `main.ts` — `queryOllama()` |
+| Per-tab PTY spawn and pipe | `main.ts` — `createTab()` / `destroyTab()`, `tabs` Map |
+| Ollama HTTP streaming | `main.ts` — `queryOllama(tabId, ...)` (per-tab conversation history) |
 | Model listing | `main.ts` — `listOllamaModels()` |
 | Config persistence | `main.ts` — `loadConfigRaw()` / `saveConfigKey()` / `resolveConfig()` |
 | Theme loading | `main.ts` — `loadTheme()` |
 | Keybinding parsing | `main.ts` — `parseKeybinding()` |
 | System info for prompt | `main.ts` — `buildSystemPrompt()` |
-| IPC bridge | `preload.ts` — `contextBridge` |
-| Terminal rendering | `renderer.ts` — xterm.js setup |
-| Inline AI mode | `renderer.ts` — state machine (idle/input/streaming/approval), prompt history, visual separators |
-| Panel AI mode | `renderer.ts` — overlay panel with setup wizard |
-| Response routing | `renderer.ts` — chunks routed by `aiQuerySource` |
-| Welcome message | `renderer.ts` — `showWelcome()` |
+| IPC bridge (tab-aware) | `preload.ts` — `contextBridge` (all PTY/AI channels include `tabId`) |
+| Tab management | `renderer.ts` — `TabInstance`, `createTabInstance()`, `switchToTab()`, `closeTab()` |
+| Terminal rendering | `renderer.ts` — per-tab xterm.js + FitAddon |
+| Inline AI mode | `renderer.ts` — per-tab state machine (idle/input/streaming/approval), prompt history, visual separators |
+| Panel AI mode | `renderer.ts` — shared overlay panel, operates on active tab |
+| Response routing | `renderer.ts` — chunks routed by `tabId` to correct `TabInstance` |
+| Welcome message | `renderer.ts` — `showWelcome(tab, version)` per tab |
 
 ---
 
