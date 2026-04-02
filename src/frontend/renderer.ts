@@ -214,6 +214,7 @@ interface TabInstance {
   // Welcome/buffer
   welcomeShown: boolean;
   ptyBuffer: string[];
+  winStartupFilter: boolean;
   // Panel state per tab
   panelSuggestedCommand: string;
   panelResponseBuffer: string;
@@ -299,6 +300,7 @@ function createTabInstance(): TabInstance {
     aiQuerySource: null,
     tabCompletionBusy: false,
     welcomeShown: false,
+    winStartupFilter: false,
     ptyBuffer: [],
     panelSuggestedCommand: '',
     panelResponseBuffer: '',
@@ -306,6 +308,26 @@ function createTabInstance(): TabInstance {
   };
 
   tabInstances.set(id, tab);
+
+  // Shift+Enter: insert a newline without executing the command.
+  // On Windows, PowerShell enables win32-input-mode (\x1b[?9001h) so we must
+  // send the Shift+Enter as a win32-input-mode key event for PSReadLine's
+  // AddLine handler to recognise it.  Format: ESC[Vk;Sc;Uc;Kd;Cs;Rc_
+  // On Unix shells, \n (vs \r for Enter) is the standard soft-newline.
+  newTerm.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey && tab.inlineState === 'idle') {
+      e.preventDefault();
+      const isWin = window.electronAPI.getPlatform() === 'win32';
+      if (isWin) {
+        // VK_RETURN=13, ScanCode=28, Char=13, KeyDown=1, SHIFT_PRESSED=16, Repeat=1
+        window.electronAPI.ptyWrite(id, '\x1b[13;28;13;1;16;1_');
+      } else {
+        window.electronAPI.ptyWrite(id, '\n');
+      }
+      return false;
+    }
+    return true;
+  });
 
   // Wire keystrokes: inline handler or PTY
   newTerm.onData((data) => {
@@ -526,8 +548,12 @@ async function initTab(tab: TabInstance): Promise<void> {
 
   const isWin = window.electronAPI.getPlatform() === 'win32';
   if (isWin) {
+    // PowerShell clears the screen on startup (ESC[2J, ESC[H, floods of \r\n)
+    // which would wipe the welcome banner. Discard the buffered startup output
+    // and activate a short filter that strips destructive sequences from the
+    // next chunks until the actual prompt arrives.
     tab.ptyBuffer = [];
-    window.electronAPI.ptyWrite(tab.id, '\r');
+    tab.winStartupFilter = true;
   } else {
     for (const data of tab.ptyBuffer) {
       tab.term.write(data);
@@ -540,11 +566,30 @@ async function initTab(tab: TabInstance): Promise<void> {
 // PTY DATA / EXIT ROUTING (tab-aware)
 // ============================================================
 
+/** Strip PowerShell startup sequences that would clear the screen. */
+function stripWinStartupNoise(data: string): string {
+  return data
+    .replace(/\x1b\[\?[0-9;]*[hlsr]/g, '')   // mode sets (cursor hide/show, focus events)
+    .replace(/\x1b\[2J/g, '')                  // clear screen
+    .replace(/\x1b\[H/g, '')                   // cursor home
+    .replace(/\x1b\[K/g, '')                   // erase line
+    .replace(/\x1b\[m/g, '')                   // reset attributes
+    .replace(/\x1b\][^\x07]*\x07/g, '')        // OSC sequences (window title)
+    .replace(/[\r\n]+/g, '');                   // collapse all newlines
+}
+
 window.electronAPI.onPtyData((tabId, data) => {
   const tab = tabInstances.get(tabId);
   if (!tab) return;
   if (!tab.welcomeShown) {
     tab.ptyBuffer.push(data);
+  } else if (tab.winStartupFilter) {
+    // Filter destructive sequences until we see the prompt text.
+    const cleaned = stripWinStartupNoise(data);
+    if (cleaned.length > 0) {
+      tab.term.write(cleaned);
+      tab.winStartupFilter = false;
+    }
   } else {
     tab.term.write(data);
   }
