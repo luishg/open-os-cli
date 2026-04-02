@@ -215,6 +215,7 @@ interface TabInstance {
   welcomeShown: boolean;
   ptyBuffer: string[];
   winStartupFilter: boolean;
+  winFilterTimer: ReturnType<typeof setTimeout> | null;
   // Panel state per tab
   panelSuggestedCommand: string;
   panelResponseBuffer: string;
@@ -301,6 +302,7 @@ function createTabInstance(): TabInstance {
     tabCompletionBusy: false,
     welcomeShown: false,
     winStartupFilter: false,
+    winFilterTimer: null,
     ptyBuffer: [],
     panelSuggestedCommand: '',
     panelResponseBuffer: '',
@@ -322,7 +324,10 @@ function createTabInstance(): TabInstance {
         // VK_RETURN=13, ScanCode=28, Char=13, KeyDown=1, SHIFT_PRESSED=16, Repeat=1
         window.electronAPI.ptyWrite(id, '\x1b[13;28;13;1;16;1_');
       } else {
-        window.electronAPI.ptyWrite(id, '\n');
+        // \x16 = Ctrl+V (quoted-insert in readline/ZLE) makes the shell
+        // treat the next character literally, so \n is inserted into the
+        // prompt instead of executing the command.
+        window.electronAPI.ptyWrite(id, '\x16\n');
       }
       return false;
     }
@@ -461,31 +466,31 @@ function getAiTriggerLabel(): string {
 // WELCOME MESSAGE & INIT (per-tab)
 // ============================================================
 
-function showWelcome(tab: TabInstance, version: string): void {
+function showWelcome(tab: TabInstance, version: string): number {
   const b = S.brand;
   const d = S.gray;
   const r = S.reset;
 
-  tab.term.write(
-    [
-      '',
-      `${b} ░███████  ░████████   ░███████  ░████████           ░███████   ░███████${r}`,
-      `${b}░██    ░██ ░██    ░██ ░██    ░██ ░██    ░██ ░██████ ░██    ░██ ░██${r}`,
-      `${b}░██    ░██ ░██    ░██ ░█████████ ░██    ░██         ░██    ░██  ░███████${r}`,
-      `${b}░██    ░██ ░███   ░██ ░██        ░██    ░██         ░██    ░██        ░██${r}`,
-      `${b} ░███████  ░██░█████   ░███████  ░██    ░██          ░███████   ░███████${r}`,
-      `${b}           ░██${r}`,
-      `${b}           ░██${r}`,
-      '',
-      ` ${d}v${version} — Simple terminal. Smart assistance.${r}`,
-      ` ${d}${getAiTriggerLabel()} — open-os assistant${r}`,
-      '',
-    ].join('\r\n') + '\r\n',
-  );
+  const lines = [
+    '',
+    `${b} ░███████  ░████████   ░███████  ░████████           ░███████   ░███████${r}`,
+    `${b}░██    ░██ ░██    ░██ ░██    ░██ ░██    ░██ ░██████ ░██    ░██ ░██${r}`,
+    `${b}░██    ░██ ░██    ░██ ░█████████ ░██    ░██         ░██    ░██  ░███████${r}`,
+    `${b}░██    ░██ ░███   ░██ ░██        ░██    ░██         ░██    ░██        ░██${r}`,
+    `${b} ░███████  ░██░█████   ░███████  ░██    ░██          ░███████   ░███████${r}`,
+    `${b}           ░██${r}`,
+    `${b}           ░██${r}`,
+    '',
+    ` ${d}v${version} — Simple terminal. Smart assistance.${r}`,
+    ` ${d}${getAiTriggerLabel()} — open-os assistant${r}`,
+    '',
+  ];
+  tab.term.write(lines.join('\r\n') + '\r\n');
+  return lines.length;
 }
 
 // Onboarding intro — shown when Ollama is not running or no model is configured
-async function showOnboarding(tab: TabInstance): Promise<void> {
+async function showOnboarding(tab: TabInstance): Promise<number> {
   const b = S.brand;
   const d = S.gray;
   const w = S.white;
@@ -497,7 +502,7 @@ async function showOnboarding(tab: TabInstance): Promise<void> {
   const hasModels = ollamaResult.ok && ollamaResult.models.length > 0;
 
   // If already configured and Ollama is reachable, skip onboarding
-  if (config.model && ollamaRunning) return;
+  if (config.model && ollamaRunning) return 0;
 
   const lines: string[] = [];
 
@@ -538,12 +543,13 @@ async function showOnboarding(tab: TabInstance): Promise<void> {
   }
 
   tab.term.write(lines.join('\r\n') + '\r\n');
+  return lines.length;
 }
 
 async function initTab(tab: TabInstance): Promise<void> {
   const version = await window.electronAPI.getVersion().catch(() => '0.0.0');
-  showWelcome(tab, version);
-  await showOnboarding(tab);
+  const welcomeLines = showWelcome(tab, version);
+  const onboardingLines = await showOnboarding(tab);
   tab.welcomeShown = true;
 
   const isWin = window.electronAPI.getPlatform() === 'win32';
@@ -554,6 +560,15 @@ async function initTab(tab: TabInstance): Promise<void> {
     // next chunks until the actual prompt arrives.
     tab.ptyBuffer = [];
     tab.winStartupFilter = true;
+    // ConPTY maintains its own screen buffer and emits absolute cursor
+    // positioning.  The welcome banner was written directly to xterm.js, so
+    // ConPTY's cursor is still near row 0.  Feed Enter keys to the PTY to
+    // advance ConPTY's internal cursor to match xterm.js.  The startup
+    // filter eats the resulting echoed prompts, then sends one final Enter
+    // to get a clean prompt that flows through the normal (unfiltered) path
+    // with correct cursor positioning.
+    const enters = '\r'.repeat(welcomeLines + onboardingLines);
+    window.electronAPI.ptyWrite(tab.id, enters);
   } else {
     for (const data of tab.ptyBuffer) {
       tab.term.write(data);
@@ -584,11 +599,21 @@ window.electronAPI.onPtyData((tabId, data) => {
   if (!tab.welcomeShown) {
     tab.ptyBuffer.push(data);
   } else if (tab.winStartupFilter) {
-    // Filter destructive sequences until we see the prompt text.
+    // Filter destructive sequences.  We feed Enter keys to the PTY to
+    // advance ConPTY's cursor past the welcome banner, which causes
+    // multiple prompt echoes.  Debounce: eat all intermediate prompts
+    // and, once quiet, disable the filter and send one final Enter so
+    // the shell emits a clean prompt through the normal (unfiltered)
+    // path with correct ConPTY cursor positioning.
     const cleaned = stripWinStartupNoise(data);
     if (cleaned.length > 0) {
-      tab.term.write(cleaned);
-      tab.winStartupFilter = false;
+      if (tab.winFilterTimer) clearTimeout(tab.winFilterTimer);
+      tab.winFilterTimer = setTimeout(() => {
+        tab.winStartupFilter = false;
+        tab.winFilterTimer = null;
+        // Trigger a fresh prompt that passes through the normal path.
+        window.electronAPI.ptyWrite(tab.id, '\r');
+      }, 200);
     }
   } else {
     tab.term.write(data);
