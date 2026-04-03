@@ -1,7 +1,7 @@
 {
   "name": "open-os-cli",
   "version": "0.5.2",
-  "description": "Simple terminal. Smart assistance.",
+  "description": "Terminal emulator with private, local AI powered by Ollama",
   "main": "dist/main.js",
   "license": "MIT",
   "homepage": "https://open-os.com",

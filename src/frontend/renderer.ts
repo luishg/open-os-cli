@@ -481,7 +481,7 @@ function showWelcome(tab: TabInstance, version: string): number {
     `${b}           ░██${r}`,
     `${b}           ░██${r}`,
     '',
-    ` ${d}v${version} — Simple terminal. Smart assistance.${r}`,
+    ` ${d}v${version} — Terminal emulator with private, local AI powered by Ollama${r}`,
     ` ${d}${getAiTriggerLabel()} — open-os assistant${r}`,
     '',
   ];

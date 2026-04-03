@@ -1,6 +1,6 @@
 # open-os cli
 
-A simple terminal emulator with a secure, built-in AI assistant — no accounts, no telemetry.
+Terminal emulator with private, local AI powered by Ollama.
 
 Part of **Open-OS** (https://open-os.com/): open, smart tools that make technology more interoperable.
 
