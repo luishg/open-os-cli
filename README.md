@@ -41,7 +41,17 @@ chmod +x open-os-cli-0.5.2.AppImage
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
 
-### Arch Linux (.pacman)
+### Arch Linux / Omarchy (AUR)
+
+Install from the [AUR](https://aur.archlinux.org/packages/open-os-cli-bin) using your preferred AUR helper:
+
+```bash
+yay -S open-os-cli-bin
+```
+
+This is the recommended method for Arch-based distros — it handles installation, updates, and removal through pacman.
+
+Alternatively, download the `.pacman` package directly:
 
 | File | Size |
 |---|---|
@@ -386,6 +396,33 @@ Ollama connection defaults to `localhost:11434`.
 2. **Transparency** — AI output is visually distinct from terminal output.
 3. **Local-first** — Uses Ollama for fully local inference. No accounts, no telemetry.
 4. **Small scope** — Focused terminal + AI assistance. No plugins, no agents, no automation.
+
+---
+
+## Updating the AUR package
+
+After publishing a new GitHub Release, update the AUR package so Arch users get the new version:
+
+```bash
+# 1. Get the sha256 of the new .pacman file
+sha256sum release/open-os-cli-<version>.pacman
+
+# 2. Go to the AUR repo (outside the main project)
+cd ~/open-os-cli-aur/aur-repo
+
+# 3. Update PKGBUILD: bump pkgver and replace sha256sums
+#    Edit pkgver=<new-version> and sha256sums=('<new-hash>')
+
+# 4. Regenerate .SRCINFO
+makepkg --printsrcinfo > .SRCINFO
+
+# 5. Commit and push
+git add PKGBUILD .SRCINFO
+git commit -m "Update to <version>"
+git push
+```
+
+The AUR repo lives at `~/open-os-cli-aur/aur-repo` (remote: `ssh://aur@aur.archlinux.org/open-os-cli-bin.git`).
 
 ---
 
