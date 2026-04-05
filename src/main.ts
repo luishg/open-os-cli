@@ -24,12 +24,14 @@ interface ChatMessage {
 }
 const MAX_HISTORY_MESSAGES = 20; // 10 exchanges (user + assistant pairs)
 
-// Per-tab state: each tab has its own PTY and conversation history
+// Per-tab state: each tab has its own PTY (terminal) or just conversation history (chat)
 interface TabState {
-  shell: pty.IPty;
+  type: 'terminal' | 'chat';
+  shell: pty.IPty | null;
   conversationHistory: ChatMessage[];
 }
 const tabs = new Map<string, TabState>();
+const MAX_CHAT_HISTORY_MESSAGES = 50; // 25 exchanges for chat tabs
 
 // ============================================================
 // CONFIG
@@ -456,6 +458,10 @@ function createWindow(): void {
         label: 'New Tab',
         click: () => mainWindow.webContents.send('tab:new-request'),
       },
+      {
+        label: 'New Chat Tab',
+        click: () => mainWindow.webContents.send('tab:new-chat-request'),
+      },
       { type: 'separator' },
       {
         label: 'Copy',
@@ -502,7 +508,7 @@ function createTab(tabId: string): void {
     env: process.env as { [key: string]: string },
   });
 
-  const tabState: TabState = { shell: tabShell, conversationHistory: [] };
+  const tabState: TabState = { type: 'terminal', shell: tabShell, conversationHistory: [] };
   tabs.set(tabId, tabState);
 
   // PTY output → renderer (tagged with tabId)
@@ -523,9 +529,16 @@ function createTab(tabId: string): void {
 function destroyTab(tabId: string): void {
   const tab = tabs.get(tabId);
   if (tab) {
-    tab.shell.kill();
+    if (tab.shell) tab.shell.kill();
     tabs.delete(tabId);
   }
+}
+
+// --- Chat tab (no PTY, just conversation history) ---
+
+function createChatTab(tabId: string): void {
+  const tabState: TabState = { type: 'chat', shell: null, conversationHistory: [] };
+  tabs.set(tabId, tabState);
 }
 
 // ============================================================
@@ -712,6 +725,151 @@ function queryOllama(tabId: string, prompt: string, context: string): void {
   req.end();
 }
 
+// --- Chat-mode Ollama query (free-form text, no JSON format, no system prompt) ---
+
+function queryChatOllama(tabId: string, prompt: string): void {
+  const config = resolveConfig();
+  const model = config.model;
+  const tab = tabs.get(tabId);
+
+  if (!model) {
+    mainWindow.webContents.send('ai:error', tabId, 'No model selected. Configure a model in Settings.');
+    return;
+  }
+
+  const history = tab?.conversationHistory ?? [];
+  history.push({ role: 'user', content: prompt });
+
+  const maxHistory = tab?.type === 'chat' ? MAX_CHAT_HISTORY_MESSAGES : MAX_HISTORY_MESSAGES;
+  while (history.length > maxHistory) {
+    history.shift();
+  }
+
+  // Chat tabs: no system prompt — raw user/assistant conversation only.
+  // The user interacts naturally with the model without any injected instructions.
+  const messages = [...history];
+
+  // Free-form text with thinking support (think: true enables Ollama's
+  // dedicated message.thinking field for reasoning models)
+  const body = JSON.stringify({ model, messages, stream: true, think: true });
+
+  let currentAssistantResponse = '';
+  let currentThinkingResponse = '';
+
+  const req = http.request(
+    {
+      hostname: OLLAMA_HOST,
+      port: OLLAMA_PORT,
+      path: '/api/chat',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    },
+    (res) => {
+      let buffer = '';
+      let doneSent = false;
+
+      res.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const json = JSON.parse(line);
+            // Thinking tokens come in message.thinking (separate from content)
+            if (json.message?.thinking) {
+              currentThinkingResponse += json.message.thinking;
+              mainWindow.webContents.send('ai:thinking-chunk', tabId, json.message.thinking);
+            }
+            if (json.message?.content) {
+              currentAssistantResponse += json.message.content;
+              mainWindow.webContents.send('ai:chunk', tabId, json.message.content);
+            }
+            if (json.done && !doneSent) {
+              doneSent = true;
+              if (currentAssistantResponse || currentThinkingResponse) {
+                history.push({ role: 'assistant', content: currentAssistantResponse });
+              }
+              // Send metrics from the done chunk
+              const metrics = {
+                totalDuration: json.total_duration || 0,
+                loadDuration: json.load_duration || 0,
+                promptEvalCount: json.prompt_eval_count || 0,
+                promptEvalDuration: json.prompt_eval_duration || 0,
+                evalCount: json.eval_count || 0,
+                evalDuration: json.eval_duration || 0,
+              };
+              mainWindow.webContents.send('ai:done', tabId, metrics);
+            }
+          } catch {
+            // Incomplete JSON line — will be completed in the next chunk
+          }
+        }
+      });
+
+      res.on('end', () => {
+        if (!doneSent) {
+          doneSent = true;
+          if (currentAssistantResponse || currentThinkingResponse) {
+            history.push({ role: 'assistant', content: currentAssistantResponse });
+          }
+          mainWindow.webContents.send('ai:done', tabId, null);
+        }
+      });
+    },
+  );
+
+  req.on('error', (err: Error) => {
+    const lastIdx = history.length - 1;
+    if (lastIdx >= 0 && history[lastIdx].role === 'user') {
+      history.pop();
+    }
+
+    const message =
+      err.message.includes('ECONNREFUSED')
+        ? `Cannot connect to Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}. Is Ollama running?`
+        : err.message;
+    mainWindow.webContents.send('ai:error', tabId, message);
+  });
+
+  req.write(body);
+  req.end();
+}
+
+// --- Model info (POST /api/show) for capabilities and context ---
+
+function showOllamaModel(modelName: string): Promise<Record<string, unknown> | null> {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ name: modelName });
+    const req = http.request(
+      {
+        hostname: OLLAMA_HOST,
+        port: OLLAMA_PORT,
+        path: '/api/show',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); } catch { resolve(null); }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.write(body);
+    req.end();
+  });
+}
+
 // ============================================================
 // 4. IPC HANDLERS
 // These connect the renderer (UI) to the PTY and AI provider.
@@ -727,13 +885,18 @@ function setupIPC(): void {
     destroyTab(tabId);
   });
 
-  // --- PTY (tab-aware) ---
+  // --- Chat tab lifecycle ---
+  ipcMain.on('tab:create-chat', (_event, tabId: string) => {
+    createChatTab(tabId);
+  });
+
+  // --- PTY (tab-aware, null-safe for chat tabs) ---
   ipcMain.on('pty:write', (_event, tabId: string, data: string) => {
-    tabs.get(tabId)?.shell.write(data);
+    tabs.get(tabId)?.shell?.write(data);
   });
 
   ipcMain.on('pty:resize', (_event, size: { tabId: string; cols: number; rows: number }) => {
-    tabs.get(size.tabId)?.shell.resize(size.cols, size.rows);
+    tabs.get(size.tabId)?.shell?.resize(size.cols, size.rows);
   });
 
   // --- AI (tab-aware) ---
@@ -741,12 +904,17 @@ function setupIPC(): void {
     queryOllama(payload.tabId, payload.prompt, payload.context);
   });
 
+  // --- Chat query (free-form text, no JSON format) ---
+  ipcMain.on('chat:query', (_event, payload: { tabId: string; prompt: string }) => {
+    queryChatOllama(payload.tabId, payload.prompt);
+  });
+
   // --- Filesystem tab-completion for inline AI prompt (tab-aware) ---
   ipcMain.handle('fs:complete', (_event, tabId: string, partial: string) => {
     const tab = tabs.get(tabId);
     let cwd: string;
     try {
-      if (!tab) throw new Error('tab not found');
+      if (!tab || !tab.shell) throw new Error('tab not found');
       if (os.platform() === 'linux') {
         cwd = fs.readlinkSync(`/proc/${tab.shell.pid}/cwd`);
       } else if (os.platform() === 'darwin') {
@@ -805,6 +973,14 @@ function setupIPC(): void {
     return resolveConfig();
   });
 
+  ipcMain.handle('ollama:show-model', async (_event, name: string) => {
+    try {
+      return await showOllamaModel(name);
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle('ollama:list-models', async () => {
     try {
       return { ok: true, models: await listOllamaModels() };
@@ -845,7 +1021,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   for (const [, tab] of tabs) {
-    tab.shell.kill();
+    if (tab.shell) tab.shell.kill();
   }
   tabs.clear();
   app.quit();

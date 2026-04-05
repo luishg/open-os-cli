@@ -58,12 +58,16 @@ declare global {
       onPtyExit: (callback: (tabId: string, code: number) => void) => void;
       // Tab lifecycle
       tabCreate: (tabId: string) => void;
+      tabCreateChat: (tabId: string) => void;
       tabClose: (tabId: string) => void;
       onTabNewRequest: (callback: () => void) => void;
+      onChatTabNewRequest: (callback: () => void) => void;
       // AI (tab-aware)
       aiQuery: (tabId: string, prompt: string, context: string) => void;
+      chatQuery: (tabId: string, prompt: string) => void;
       onAiChunk: (callback: (tabId: string, chunk: string) => void) => void;
-      onAiDone: (callback: (tabId: string) => void) => void;
+      onAiThinkingChunk: (callback: (tabId: string, chunk: string) => void) => void;
+      onAiDone: (callback: (tabId: string, metrics?: Record<string, number> | null) => void) => void;
       onAiError: (callback: (tabId: string, error: string) => void) => void;
       // Filesystem tab-completion (tab-aware)
       fsComplete: (tabId: string, partial: string) => Promise<string[]>;
@@ -78,6 +82,7 @@ declare global {
       ollamaListModels: () => Promise<
         { ok: true; models: string[] } | { ok: false; error: string }
       >;
+      ollamaShowModel: (name: string) => Promise<Record<string, unknown> | null>;
       // Hotkey & context menu
       onToggleAIPanel: (callback: () => void) => void;
       onTermCopy: (callback: () => void) => void;
@@ -194,10 +199,21 @@ type InlineState = 'idle' | 'input' | 'streaming' | 'approval';
 
 interface TabInstance {
   id: string;
+  type: 'terminal' | 'chat';
   term: Terminal;
   fitAddon: FitAddon;
   paneEl: HTMLDivElement;
   tabEl: HTMLDivElement;
+  // Chat-specific fields (null for terminal tabs)
+  chatMessagesEl: HTMLDivElement | null;
+  chatInputEl: HTMLTextAreaElement | null;
+  chatSendBtn: HTMLButtonElement | null;
+  chatModelInfoEl: HTMLDivElement | null;
+  chatStreamEl: HTMLDivElement | null;
+  chatStreamBuffer: string;
+  chatThinkingBuffer: string;
+  chatInThinking: boolean;
+  chatModelContextLength: number;
   // Per-tab inline AI state
   inlineState: InlineState;
   inlineInputBuffer: string;
@@ -284,10 +300,20 @@ function createTabInstance(): TabInstance {
 
   const tab: TabInstance = {
     id,
+    type: 'terminal',
     term: newTerm,
     fitAddon: newFitAddon,
     paneEl,
     tabEl,
+    chatMessagesEl: null,
+    chatInputEl: null,
+    chatSendBtn: null,
+    chatModelInfoEl: null,
+    chatStreamEl: null,
+    chatStreamBuffer: '',
+    chatThinkingBuffer: '',
+    chatInThinking: false,
+    chatModelContextLength: 0,
     inlineState: 'idle',
     inlineInputBuffer: '',
     inlineResponseBuffer: '',
@@ -373,8 +399,12 @@ function switchToTab(tabId: string): void {
   activeTabId = tabId;
 
   // Re-fit and sync
-  fitTab(next);
-  next.term.focus();
+  if (next.type === 'terminal') {
+    fitTab(next);
+    next.term.focus();
+  } else if (next.chatInputEl) {
+    next.chatInputEl.focus();
+  }
 }
 
 function closeTab(tabId: string): void {
@@ -384,13 +414,13 @@ function closeTab(tabId: string): void {
   const tab = tabInstances.get(tabId);
   if (!tab) return;
 
-  // Tell main process to kill the PTY
+  // Tell main process to clean up
   window.electronAPI.tabClose(tabId);
 
   // Clean up DOM
   tab.tabEl.remove();
   tab.paneEl.remove();
-  tab.term.dispose();
+  if (tab.type === 'terminal') tab.term.dispose();
   tabInstances.delete(tabId);
 
   // If we closed the active tab, switch to an adjacent one
@@ -409,12 +439,514 @@ async function createAndSwitchNewTab(): Promise<void> {
 }
 
 // ============================================================
+// CHAT TAB SYSTEM
+// ============================================================
+
+// --- Lightweight markdown renderer ---
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderMarkdown(text: string): string {
+  // Split into code blocks and non-code sections
+  const parts: string[] = [];
+  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(renderMarkdownInline(text.slice(lastIndex, match.index)));
+    }
+    const code = escapeHtml(match[2].trimEnd());
+    parts.push(`<pre class="chat-code-block"><code>${code}</code></pre>`);
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(renderMarkdownInline(text.slice(lastIndex)));
+  }
+
+  return parts.join('');
+}
+
+function renderMarkdownInline(text: string): string {
+  let html = escapeHtml(text);
+
+  // Inline code (must come before bold/italic to avoid conflicts)
+  html = html.replace(/`([^`]+)`/g, '<code class="chat-inline-code">$1</code>');
+
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic (single *)
+  html = html.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+
+  // Headers (at line start)
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Unordered list items
+  html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+
+  // Ordered list items
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+
+  // Wrap consecutive <li> in <ul>
+  html = html.replace(/((?:<li>.*?<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+  // Line breaks
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
+}
+
+// --- Render a streaming assistant message into its DOM element ---
+// Thinking content comes from ai:thinking-chunk (Ollama's dedicated field).
+// Response content comes from ai:chunk. Both use separate buffers.
+// Fallback: if no thinking chunks received, check response buffer for
+// raw <think>...</think> tags (some older models embed them directly).
+
+function getThinkingAndResponse(tab: TabInstance): { thinking: string; response: string } {
+  // Primary: Ollama's dedicated thinking field via chatThinkingBuffer
+  if (tab.chatThinkingBuffer) {
+    return { thinking: tab.chatThinkingBuffer, response: tab.chatStreamBuffer };
+  }
+  // Fallback: parse raw <think> tags in the response buffer
+  const buf = tab.chatStreamBuffer;
+  const thinkStart = buf.indexOf('<think>');
+  if (thinkStart === -1) return { thinking: '', response: buf };
+  const thinkEnd = buf.indexOf('</think>');
+  if (thinkEnd === -1) {
+    return { thinking: buf.slice(thinkStart + 7), response: '' };
+  }
+  return {
+    thinking: buf.slice(thinkStart + 7, thinkEnd),
+    response: buf.slice(thinkEnd + 8).trimStart(),
+  };
+}
+
+function renderStreamingMessage(tab: TabInstance): void {
+  if (!tab.chatStreamEl) return;
+
+  const { thinking, response } = getThinkingAndResponse(tab);
+  let html = '';
+
+  if (thinking) {
+    html += `<div class="chat-thinking-label">Thinking...</div>`;
+    html += `<div class="chat-thinking">${escapeHtml(thinking)}</div>`;
+  }
+
+  if (response) {
+    html += renderMarkdown(response);
+  }
+
+  // Streaming cursor
+  html += '<span class="chat-streaming-cursor"></span>';
+
+  tab.chatStreamEl.innerHTML = html;
+
+  // Auto-scroll
+  if (tab.chatMessagesEl) {
+    tab.chatMessagesEl.scrollTop = tab.chatMessagesEl.scrollHeight;
+  }
+}
+
+// --- Finalize assistant message (remove cursor, apply full markdown, add metrics) ---
+
+function finalizeStreamingMessage(tab: TabInstance, metrics?: Record<string, number> | null): void {
+  if (!tab.chatStreamEl) return;
+
+  const { thinking, response } = getThinkingAndResponse(tab);
+  let html = '';
+
+  if (thinking) {
+    html += `<div class="chat-thinking-label">Thinking</div>`;
+    html += `<div class="chat-thinking">${escapeHtml(thinking)}</div>`;
+  }
+
+  if (response) {
+    html += renderMarkdown(response);
+  } else if (!thinking) {
+    html += '<em style="color:#555e70">(empty response)</em>';
+  }
+
+  // Response metrics
+  if (metrics && metrics.evalCount > 0) {
+    const tokensGen = metrics.evalCount;
+    const evalSec = metrics.evalDuration / 1e9;
+    const tokPerSec = evalSec > 0 ? (tokensGen / evalSec).toFixed(1) : '—';
+    const ttft = metrics.promptEvalDuration > 0
+      ? (metrics.promptEvalDuration / 1e6).toFixed(0) + 'ms'
+      : '—';
+    const totalSec = (metrics.totalDuration / 1e9).toFixed(1);
+
+    let metricsHtml = `<div class="chat-response-metrics">` +
+      `<span>${tokensGen} tokens</span>` +
+      `<span>${tokPerSec} tok/s</span>` +
+      `<span>TTFT ${ttft}</span>` +
+      `<span>${totalSec}s total</span>`;
+
+    // Context usage (if we know the model's context length)
+    if (tab.chatModelContextLength > 0 && metrics.promptEvalCount > 0) {
+      const pct = ((metrics.promptEvalCount / tab.chatModelContextLength) * 100).toFixed(1);
+      const fillWidth = Math.min(100, (metrics.promptEvalCount / tab.chatModelContextLength) * 100);
+      metricsHtml += `<span class="chat-context-bar">` +
+        `ctx ${metrics.promptEvalCount.toLocaleString()}/${formatContextSize(tab.chatModelContextLength)}` +
+        ` (${pct}%) ` +
+        `<span class="chat-context-bar-track"><span class="chat-context-bar-fill" style="width:${fillWidth}%"></span></span>` +
+        `</span>`;
+    }
+
+    metricsHtml += `</div>`;
+    html += metricsHtml;
+  }
+
+  tab.chatStreamEl.innerHTML = html;
+
+  if (tab.chatMessagesEl) {
+    tab.chatMessagesEl.scrollTop = tab.chatMessagesEl.scrollHeight;
+  }
+}
+
+function formatContextSize(tokens: number): string {
+  if (tokens >= 1000000) return (tokens / 1000000).toFixed(0) + 'M';
+  if (tokens >= 1000) return (tokens / 1000).toFixed(0) + 'K';
+  return String(tokens);
+}
+
+// --- Send a chat message ---
+
+function sendChatMessage(tab: TabInstance): void {
+  if (!tab.chatInputEl || !tab.chatSendBtn || !tab.chatMessagesEl) return;
+
+  const prompt = tab.chatInputEl.value.trim();
+  if (!prompt || tab.isStreaming) return;
+
+  // Disable input during streaming
+  tab.isStreaming = true;
+  tab.chatInputEl.disabled = true;
+  tab.chatSendBtn.disabled = true;
+  tab.chatStreamBuffer = '';
+  tab.chatThinkingBuffer = '';
+  tab.chatInThinking = false;
+  tab.aiQuerySource = 'chat' as any;
+
+  // Add user message to the UI
+  const userMsg = document.createElement('div');
+  userMsg.className = 'chat-msg chat-msg-user';
+  const userLabel = document.createElement('div');
+  userLabel.className = 'chat-msg-label';
+  userLabel.textContent = 'You';
+  userMsg.appendChild(userLabel);
+  const userText = document.createElement('div');
+  userText.textContent = prompt;
+  userMsg.appendChild(userText);
+  tab.chatMessagesEl.appendChild(userMsg);
+
+  // Create assistant message placeholder
+  const assistantMsg = document.createElement('div');
+  assistantMsg.className = 'chat-msg chat-msg-assistant';
+  const assistantLabel = document.createElement('div');
+  assistantLabel.className = 'chat-msg-label';
+  assistantLabel.textContent = configuredModel || 'Assistant';
+  assistantMsg.appendChild(assistantLabel);
+  const contentEl = document.createElement('div');
+  assistantMsg.appendChild(contentEl);
+  tab.chatMessagesEl.appendChild(assistantMsg);
+  tab.chatStreamEl = contentEl;
+
+  // Auto-scroll
+  tab.chatMessagesEl.scrollTop = tab.chatMessagesEl.scrollHeight;
+
+  // Clear input
+  tab.chatInputEl.value = '';
+  tab.chatInputEl.style.height = 'auto';
+
+  // Send query
+  window.electronAPI.chatQuery(tab.id, prompt);
+}
+
+// --- Create chat tab ---
+
+function createChatTabInstance(): TabInstance {
+  const id = String(nextTabId++);
+
+  // --- DOM: tab bar entry ---
+  const tabEl = document.createElement('div');
+  tabEl.className = 'tab';
+  tabEl.dataset.tabId = id;
+
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'tab-title';
+  titleSpan.textContent = `Chat ${id}`;
+  tabEl.appendChild(titleSpan);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'tab-close';
+  closeBtn.innerHTML = '&times;';
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeTab(id);
+  });
+  tabEl.appendChild(closeBtn);
+
+  tabEl.addEventListener('click', () => switchToTab(id));
+
+  const addBtn = document.getElementById('tab-add')!;
+  addBtn.parentElement!.insertBefore(tabEl, addBtn);
+
+  // --- DOM: chat pane ---
+  const paneEl = document.createElement('div');
+  paneEl.className = 'terminal-pane chat-pane';
+  paneEl.dataset.tabId = id;
+
+  // Messages container (welcome is rendered inside, so it scrolls away)
+  const messagesEl = document.createElement('div');
+  messagesEl.className = 'chat-messages';
+  paneEl.appendChild(messagesEl);
+
+  // Input row
+  const inputRow = document.createElement('div');
+  inputRow.className = 'chat-input-row';
+
+  const inputEl = document.createElement('textarea');
+  inputEl.className = 'chat-input';
+  inputEl.placeholder = 'Type a message... (Enter to send, Shift+Enter for new line)';
+  inputEl.rows = 1;
+  inputRow.appendChild(inputEl);
+
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'chat-send';
+  sendBtn.textContent = 'Send';
+  inputRow.appendChild(sendBtn);
+
+  paneEl.appendChild(inputRow);
+
+  // Model info bar (below input)
+  const modelInfoEl = document.createElement('div');
+  modelInfoEl.className = 'chat-model-info';
+  paneEl.appendChild(modelInfoEl);
+
+  document.getElementById('terminal-container')!.appendChild(paneEl);
+
+  const tab: TabInstance = {
+    id,
+    type: 'chat',
+    term: null as any,
+    fitAddon: null as any,
+    paneEl,
+    tabEl,
+    chatMessagesEl: messagesEl,
+    chatInputEl: inputEl,
+    chatSendBtn: sendBtn,
+    chatModelInfoEl: modelInfoEl,
+    chatStreamEl: null,
+    chatStreamBuffer: '',
+    chatThinkingBuffer: '',
+    chatInThinking: false,
+    chatModelContextLength: 0,
+    inlineState: 'idle',
+    inlineInputBuffer: '',
+    inlineResponseBuffer: '',
+    inlineCommands: [],
+    inlineCommandIndex: 0,
+    inlineAcceptedCommands: [],
+    inlineReviewBusy: false,
+    inlineHistory: [],
+    inlineHistoryIndex: -1,
+    inlineHistoryStash: '',
+    aiQuerySource: null,
+    tabCompletionBusy: false,
+    welcomeShown: true,
+    ptyBuffer: [],
+    winStartupFilter: false,
+    winFilterTimer: null,
+    panelSuggestedCommand: '',
+    panelResponseBuffer: '',
+    isStreaming: false,
+  };
+
+  // Wire input events
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage(tab);
+    }
+  });
+
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 150) + 'px';
+  });
+
+  sendBtn.addEventListener('click', () => sendChatMessage(tab));
+
+  tabInstances.set(id, tab);
+
+  // Tell main process to create chat tab state
+  window.electronAPI.tabCreateChat(id);
+
+  // Apply cached config (font, colors, padding)
+  if (cachedConfig && cachedTheme) {
+    applyConfigToTab(tab, cachedConfig, cachedTheme);
+  }
+
+  updateTabBarCount();
+  return tab;
+}
+
+async function showChatWelcome(tab: TabInstance): Promise<void> {
+  if (!tab.chatMessagesEl) return;
+
+  const version = await window.electronAPI.getVersion().catch(() => '0.0.0');
+  const config = await window.electronAPI.configGet();
+  const ollamaResult = await window.electronAPI.ollamaListModels();
+  const ollamaRunning = ollamaResult.ok;
+
+  // Build the welcome as a single <pre> block — same line structure as the
+  // terminal welcome (showWelcome) so spacing and height match exactly.
+  // Colors are applied via <span> with inline styles matching the ANSI
+  // escape equivalents (S.brand = #00afff, S.gray = #8a8a8a).
+  const brand = '#00afff';  // ANSI 256 color 39  (S.brand)
+  const gray  = '#8a8a8a';  // ANSI 256 color 245 (S.gray)
+  const white = '#ffffff';  // bold bright white   (S.white)
+
+  const b = (t: string) => `<span style="color:${brand}">${t}</span>`;
+  const d = (t: string) => `<span style="color:${gray}">${t}</span>`;
+  const w = (t: string) => `<span style="color:${white};font-weight:bold">${t}</span>`;
+
+  // Same lines as showWelcome() in the terminal, line by line
+  const lines: string[] = [
+    '',
+    b(' \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588  \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588   \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588  \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588           \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588   \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588'),
+    b('\u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588\u2588\u2588\u2588\u2588 \u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588'),
+    b('\u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 \u2591\u2588\u2588    \u2591\u2588\u2588         \u2591\u2588\u2588    \u2591\u2588\u2588  \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588'),
+    b('\u2591\u2588\u2588    \u2591\u2588\u2588 \u2591\u2588\u2588\u2588   \u2591\u2588\u2588 \u2591\u2588\u2588        \u2591\u2588\u2588    \u2591\u2588\u2588         \u2591\u2588\u2588    \u2591\u2588\u2588        \u2591\u2588\u2588'),
+    b(' \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588  \u2591\u2588\u2588\u2591\u2588\u2588\u2588\u2588\u2588   \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588  \u2591\u2588\u2588    \u2591\u2588\u2588          \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588   \u2591\u2588\u2588\u2588\u2588\u2588\u2588\u2588'),
+    b('           \u2591\u2588\u2588'),
+    b('           \u2591\u2588\u2588'),
+    '',
+    ` ${d(`v${version} \u2014 Terminal emulator with private, local AI powered by Ollama`)}`,
+    '',
+    ` ${w('Chat tab')} ${d('\u2014 This is not a terminal. Chat freely with your LLM.')}`,
+    ` ${d('Each Chat tab is an independent conversation.')}`,
+    ` ${d('To start a fresh conversation, open a new Chat tab.')}`,
+    '',
+  ];
+
+  // Onboarding (same structure as terminal onboarding)
+  if (config.model && !ollamaRunning) {
+    lines.push(` ${b('Ollama not reachable')}`);
+    lines.push('');
+    lines.push(`  ${d('The Ollama server does not appear to be running.')}`);
+    lines.push(`  ${d('Start it with:')}  ${w('ollama serve')}`);
+    lines.push('');
+  } else if (!config.model) {
+    if (!ollamaRunning) {
+      lines.push(` ${b('Getting started')}`);
+      lines.push('');
+      lines.push(`  ${d(`This app uses ${w('Ollama')} for local AI. Install from ${b('https://ollama.com')} and pull a model:`)}`);
+      lines.push(`    ${w('ollama pull llama3')}`);
+      lines.push('');
+    } else {
+      lines.push(`  ${d(`Press ${w(getAiTriggerLabel())} or ${w('click')} the bar below to select a model.`)}`);
+      lines.push('');
+    }
+  }
+
+  const pre = document.createElement('pre');
+  pre.className = 'chat-welcome';
+  pre.innerHTML = lines.join('\n');
+  tab.chatMessagesEl.appendChild(pre);
+}
+
+async function loadChatModelInfo(tab: TabInstance): Promise<void> {
+  if (!tab.chatModelInfoEl) return;
+  const config = await window.electronAPI.configGet();
+  const modelName = config.model;
+  if (!modelName) {
+    tab.chatModelInfoEl.innerHTML = '<span class="chat-model-info-detail">No model configured</span>';
+    return;
+  }
+
+  tab.chatModelInfoEl.innerHTML = `<span class="chat-model-info-name">${escapeHtml(modelName)}</span>`;
+
+  const info = await window.electronAPI.ollamaShowModel(modelName);
+  if (!info) return;
+
+  const parts: string[] = [];
+
+  // Parameter size and quantization from details
+  const details = info.details as Record<string, string> | undefined;
+  if (details?.parameter_size) parts.push(details.parameter_size);
+  if (details?.quantization_level) parts.push(details.quantization_level);
+
+  // Context length from model_info
+  const modelInfo = info.model_info as Record<string, unknown> | undefined;
+  const family = details?.family;
+  if (modelInfo && family) {
+    const ctxKey = `${family}.context_length`;
+    const ctxLen = modelInfo[ctxKey] as number | undefined;
+    if (ctxLen && ctxLen > 0) {
+      tab.chatModelContextLength = ctxLen;
+      parts.push(formatContextSize(ctxLen) + ' ctx');
+    }
+  }
+
+  // Capabilities badges
+  const capabilities = info.capabilities as string[] | undefined;
+  const badges: string[] = [];
+  if (capabilities) {
+    if (capabilities.includes('thinking')) badges.push('<span class="chat-capability-badge thinking">thinking</span>');
+    if (capabilities.includes('vision')) badges.push('<span class="chat-capability-badge vision">vision</span>');
+    if (capabilities.includes('tools')) badges.push('<span class="chat-capability-badge tools">tools</span>');
+  }
+
+  let html = `<span class="chat-model-info-name">${escapeHtml(modelName)}</span>`;
+  if (parts.length > 0) {
+    html += ` <span class="chat-model-info-detail">${parts.join(' \u00b7 ')}</span>`;
+  }
+  html += ' ' + badges.join(' ');
+
+  tab.chatModelInfoEl.innerHTML = html;
+}
+
+async function createAndSwitchNewChatTab(): Promise<void> {
+  const tab = createChatTabInstance();
+  switchToTab(tab.id);
+  await showChatWelcome(tab);
+  await loadChatModelInfo(tab);
+  // Focus the chat input
+  if (tab.chatInputEl) tab.chatInputEl.focus();
+}
+
+// ============================================================
 // CONFIG APPLICATION
 // Fetches resolved config + theme from main process and applies
 // to xterm.js options, terminal padding, and UI CSS variables.
 // ============================================================
 
 function applyConfigToTab(tab: TabInstance, config: AppConfigResolved, theme: ThemeColors): void {
+  const p = config.window.padding;
+  tab.paneEl.style.padding = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
+
+  if (tab.type === 'chat') {
+    // Chat tabs: apply font and colors via CSS (no xterm.js)
+    tab.paneEl.style.fontFamily = config.font.family;
+    tab.paneEl.style.fontSize = config.font.size + 'px';
+    tab.paneEl.style.color = theme.terminal.foreground;
+    tab.paneEl.style.background = theme.terminal.background;
+    return;
+  }
+
+  // Terminal tabs: apply to xterm.js options
   tab.term.options.fontFamily = config.font.family;
   tab.term.options.fontSize = config.font.size;
   tab.term.options.cursorBlink = config.cursor.blink;
@@ -426,9 +958,6 @@ function applyConfigToTab(tab: TabInstance, config: AppConfigResolved, theme: Th
     if (typeof value === 'string') termTheme[key] = value;
   }
   tab.term.options.theme = termTheme;
-
-  const p = config.window.padding;
-  tab.paneEl.style.padding = `${p.top}px ${p.right}px ${p.bottom}px ${p.left}px`;
 }
 
 async function applyConfig(): Promise<void> {
@@ -595,7 +1124,7 @@ function stripWinStartupNoise(data: string): string {
 
 window.electronAPI.onPtyData((tabId, data) => {
   const tab = tabInstances.get(tabId);
-  if (!tab) return;
+  if (!tab || tab.type === 'chat') return;
   if (!tab.welcomeShown) {
     tab.ptyBuffer.push(data);
   } else if (tab.winStartupFilter) {
@@ -622,7 +1151,7 @@ window.electronAPI.onPtyData((tabId, data) => {
 
 window.electronAPI.onPtyExit((tabId) => {
   const tab = tabInstances.get(tabId);
-  if (!tab) return;
+  if (!tab || tab.type === 'chat') return;
   tab.term.write('\r\n[Process exited]\r\n');
 });
 
@@ -637,6 +1166,7 @@ window.electronAPI.onPtyExit((tabId) => {
 // ============================================================
 
 function fitTab(tab: TabInstance): void {
+  if (tab.type === 'chat') return;
   const core = (tab.term as any)._core;
   const dims = core._renderService?.dimensions;
   if (!dims?.css?.cell?.width || !dims?.css?.cell?.height) {
@@ -942,11 +1472,9 @@ function resetInlineState(tab: TabInstance): void {
 
 const aiPanel = document.getElementById('ai-panel')!;
 const aiSetup = document.getElementById('ai-setup')!;
-const aiQuery = document.getElementById('ai-query')!;
-const aiInput = document.getElementById('ai-input')! as HTMLInputElement;
-const aiSend = document.getElementById('ai-send')!;
-const aiOutput = document.getElementById('ai-output')!;
-const aiActions = document.getElementById('ai-actions')!;
+const aiModelInfo = document.getElementById('ai-model-info')!;
+const aiModelDetails = document.getElementById('ai-model-details')!;
+const aiChangeModelBtn = document.getElementById('ai-change-model')!;
 const aiStatus = document.getElementById('ai-status')!;
 const aiModelLabel = document.getElementById('ai-model-label')!;
 const aiClose = document.getElementById('ai-close')!;
@@ -981,7 +1509,7 @@ async function openAIPanel(): Promise<void> {
   if (!configuredModel) {
     showSetup();
   } else {
-    showQueryMode();
+    await showModelInfo();
   }
 }
 
@@ -989,17 +1517,17 @@ function closeAIPanel(): void {
   aiPanelOpen = false;
   aiPanel.classList.remove('open');
   hintBar.classList.remove('hidden');
-  aiActions.classList.add('hidden');
   aiStatus.textContent = '';
   const tab = tabInstances.get(activeTabId);
-  if (tab) tab.term.focus();
+  if (tab && tab.type === 'terminal') tab.term.focus();
+  else if (tab && tab.chatInputEl) tab.chatInputEl.focus();
   fitTerminal();
 }
 
-// Setup wizard
+// Model selection list
 async function showSetup(): Promise<void> {
   aiSetup.classList.remove('hidden');
-  aiQuery.classList.add('hidden');
+  aiModelInfo.classList.add('hidden');
   aiModelLabel.textContent = '';
   setupMessage.textContent = 'Loading models from Ollama...';
   modelList.innerHTML = '';
@@ -1030,20 +1558,80 @@ async function selectModel(model: string): Promise<void> {
   await window.electronAPI.configSaveModel(model);
   configuredModel = model;
   updateHintBar();
-  showQueryMode();
+  await showModelInfo();
 }
 
-function showQueryMode(): void {
+// Model info display
+async function showModelInfo(): Promise<void> {
   aiSetup.classList.add('hidden');
-  aiQuery.classList.remove('hidden');
+  aiModelInfo.classList.remove('hidden');
   aiModelLabel.textContent = `[${configuredModel}]`;
-  aiInput.focus();
+  aiModelDetails.innerHTML = '<span style="color:#3a5a7c">Loading model info...</span>';
+
+  const info = await window.electronAPI.ollamaShowModel(configuredModel || '');
+
+  if (!info) {
+    aiModelDetails.innerHTML = `<div class="panel-model-name">${escapeHtml(configuredModel || '')}</div>` +
+      `<div class="panel-model-row"><span class="label">Status</span> Could not load model details</div>`;
+    return;
+  }
+
+  const details = info.details as Record<string, string> | undefined;
+  const capabilities = info.capabilities as string[] | undefined;
+  const modelInfoMap = info.model_info as Record<string, unknown> | undefined;
+  const family = details?.family;
+
+  let html = `<div class="panel-model-name">${escapeHtml(configuredModel || '')}</div>`;
+
+  // Architecture / family
+  if (details?.family) {
+    const families = (details as any).families;
+    const familyLabel = Array.isArray(families) ? families.join(', ') : details.family;
+    html += `<div class="panel-model-row"><span class="label">Family</span> ${escapeHtml(familyLabel)}</div>`;
+  }
+
+  // Parameters and quantization
+  if (details?.parameter_size) {
+    html += `<div class="panel-model-row"><span class="label">Parameters</span> ${escapeHtml(details.parameter_size)}`;
+    if (details?.quantization_level) html += ` (${escapeHtml(details.quantization_level)})`;
+    html += `</div>`;
+  }
+
+  // Context window
+  if (modelInfoMap && family) {
+    const ctxLen = modelInfoMap[`${family}.context_length`] as number | undefined;
+    if (ctxLen && ctxLen > 0) {
+      html += `<div class="panel-model-row"><span class="label">Context</span> ${ctxLen.toLocaleString()} tokens (${formatContextSize(ctxLen)})</div>`;
+    }
+  }
+
+  // Format
+  if (details?.format) {
+    html += `<div class="panel-model-row"><span class="label">Format</span> ${escapeHtml(details.format)}</div>`;
+  }
+
+  // Capabilities badges
+  if (capabilities && capabilities.length > 0) {
+    html += `<div class="panel-model-row"><span class="label">Capabilities</span> `;
+    for (const cap of capabilities) {
+      const cls = ['thinking', 'vision', 'tools', 'completion'].includes(cap) ? ` ${cap}` : '';
+      html += `<span class="panel-badge${cls}">${escapeHtml(cap)}</span>`;
+    }
+    html += `</div>`;
+  }
+
+  aiModelDetails.innerHTML = html;
 }
 
 aiClose.addEventListener('click', closeAIPanel);
 
 // Click on model label → switch model
 aiModelLabel.addEventListener('click', () => {
+  if (aiPanelOpen) showSetup();
+});
+
+// Change model button
+aiChangeModelBtn.addEventListener('click', () => {
   showSetup();
 });
 
@@ -1064,6 +1652,12 @@ window.electronAPI.onToggleAIPanel(async () => {
 
   const tab = tabInstances.get(activeTabId);
   if (!tab) return;
+
+  // Chat tabs: focus the chat input instead of opening inline/panel
+  if (tab.type === 'chat') {
+    if (tab.chatInputEl) tab.chatInputEl.focus();
+    return;
+  }
 
   if (tab.inlineState !== 'idle') {
     exitInlineMode(tab);
@@ -1098,56 +1692,57 @@ function captureTerminalContext(tab: TabInstance, lineCount = 30): string {
   return lines.join('\n').trim();
 }
 
-// ============================================================
-// 6. PANEL QUERY (uses active tab)
-// ============================================================
-
-function sendPanelQuery(): void {
-  const tab = tabInstances.get(activeTabId);
-  if (!tab) return;
-
-  const prompt = aiInput.value.trim();
-  if (!prompt || tab.isStreaming) return;
-
-  tab.isStreaming = true;
-  tab.panelSuggestedCommand = '';
-  tab.panelResponseBuffer = '';
-  aiOutput.textContent = '';
-  aiActions.classList.add('hidden');
-  aiStatus.textContent = 'thinking...';
-  tab.aiQuerySource = 'panel';
-
-  const context = captureTerminalContext(tab);
-  window.electronAPI.aiQuery(tab.id, prompt, context);
-}
-
-aiSend.addEventListener('click', sendPanelQuery);
-aiInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    sendPanelQuery();
-  }
-});
+// (Panel query removed — panel is now model selector/info only)
 
 // ============================================================
 // 7. AI RESPONSE ROUTING (tab-aware)
 // ============================================================
 
+// Thinking chunks (Ollama's dedicated message.thinking field)
+window.electronAPI.onAiThinkingChunk((tabId, chunk) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+
+  if ((tab.aiQuerySource as string) === 'chat') {
+    tab.chatThinkingBuffer += chunk;
+    tab.chatInThinking = true;
+    renderStreamingMessage(tab);
+  }
+});
+
 window.electronAPI.onAiChunk((tabId, chunk) => {
   const tab = tabInstances.get(tabId);
   if (!tab) return;
 
-  if (tab.aiQuerySource === 'inline') {
+  if ((tab.aiQuerySource as string) === 'chat') {
+    tab.chatInThinking = false;
+    tab.chatStreamBuffer += chunk;
+    renderStreamingMessage(tab);
+  } else if (tab.aiQuerySource === 'inline') {
     tab.inlineResponseBuffer += chunk;
-  } else if (tab.aiQuerySource === 'panel') {
-    tab.panelResponseBuffer += chunk;
-    aiStatus.textContent = 'generating...';
   }
 });
 
-window.electronAPI.onAiDone((tabId) => {
+window.electronAPI.onAiDone((tabId, metrics) => {
   const tab = tabInstances.get(tabId);
   if (!tab) return;
+
+  if ((tab.aiQuerySource as string) === 'chat') {
+    finalizeStreamingMessage(tab, metrics);
+    tab.isStreaming = false;
+    tab.chatStreamEl = null;
+    tab.chatStreamBuffer = '';
+    tab.chatThinkingBuffer = '';
+    tab.chatInThinking = false;
+    tab.aiQuerySource = null;
+    // Re-enable input
+    if (tab.chatInputEl) {
+      tab.chatInputEl.disabled = false;
+      tab.chatInputEl.focus();
+    }
+    if (tab.chatSendBtn) tab.chatSendBtn.disabled = false;
+    return;
+  }
 
   if (tab.aiQuerySource === 'inline' && tab.inlineState === 'streaming') {
     const { text, commands } = parseAiResponse(tab.inlineResponseBuffer);
@@ -1171,23 +1766,6 @@ window.electronAPI.onAiDone((tabId) => {
       showCommandReview(tab);
       tab.inlineState = 'approval';
     }
-  } else if (tab.aiQuerySource === 'panel') {
-    tab.isStreaming = false;
-    aiStatus.textContent = '';
-
-    const { text, commands } = parseAiResponse(tab.panelResponseBuffer);
-
-    let display = text;
-    if (commands.length > 0) {
-      display += '\n\n' + commands.map((c) => `$ ${c}`).join('\n\n');
-    }
-    aiOutput.textContent = display;
-
-    if (commands.length > 0) {
-      tab.panelSuggestedCommand = commands.join('\n');
-      aiActions.classList.remove('hidden');
-    }
-    tab.aiQuerySource = null;
   }
 });
 
@@ -1195,62 +1773,72 @@ window.electronAPI.onAiError((tabId, error) => {
   const tab = tabInstances.get(tabId);
   if (!tab) return;
 
+  if ((tab.aiQuerySource as string) === 'chat') {
+    // Show error in chat
+    if (tab.chatStreamEl) {
+      tab.chatStreamEl.innerHTML = `<span style="color:#ff6b6b">[Error] ${escapeHtml(error)}</span>`;
+    } else if (tab.chatMessagesEl) {
+      const errorMsg = document.createElement('div');
+      errorMsg.className = 'chat-msg chat-msg-error';
+      errorMsg.textContent = `[Error] ${error}`;
+      tab.chatMessagesEl.appendChild(errorMsg);
+    }
+    tab.isStreaming = false;
+    tab.chatStreamEl = null;
+    tab.chatStreamBuffer = '';
+    tab.chatThinkingBuffer = '';
+    tab.aiQuerySource = null;
+    if (tab.chatInputEl) {
+      tab.chatInputEl.disabled = false;
+      tab.chatInputEl.focus();
+    }
+    if (tab.chatSendBtn) tab.chatSendBtn.disabled = false;
+    return;
+  }
+
   if (tab.aiQuerySource === 'inline') {
     tab.term.write(`\r\n${S.error}[Error] ${error}${S.reset}\r\n`);
     inlineSeparatorClose(tab);
     window.electronAPI.ptyWrite(tab.id, '\r');
     resetInlineState(tab);
-  } else if (tab.aiQuerySource === 'panel') {
-    tab.isStreaming = false;
-    aiStatus.textContent = '';
-    aiOutput.textContent = `[Error] ${error}`;
-    tab.aiQuerySource = null;
   }
 });
 
 // ============================================================
-// 8. PANEL ACTION HANDLERS (use active tab)
-// ============================================================
-
-aiActions.addEventListener('click', (e) => {
-  const target = e.target as HTMLElement;
-  const action = target.dataset.action;
-  const tab = tabInstances.get(activeTabId);
-  if (!action || !tab || !tab.panelSuggestedCommand) return;
-  const cmd = tab.panelSuggestedCommand;
-
-  switch (action) {
-    case 'insert':
-      window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r'));
-      closeAIPanel();
-      break;
-    case 'run':
-      window.electronAPI.ptyWrite(tab.id, cmd.replace(/\n/g, '\r') + '\r');
-      closeAIPanel();
-      break;
-    case 'cancel':
-      closeAIPanel();
-      break;
-  }
-});
-
-// ============================================================
-// 9. COPY / PASTE / CLEAR (right-click context menu)
+// 8. COPY / PASTE / CLEAR (right-click context menu)
 // ============================================================
 
 window.electronAPI.onTermCopy(() => {
   const tab = tabInstances.get(activeTabId);
   if (!tab) return;
-  const selection = tab.term.getSelection();
-  if (selection) {
-    navigator.clipboard.writeText(selection);
+  if (tab.type === 'chat') {
+    // Copy selected text from the chat pane
+    const selection = window.getSelection();
+    if (selection && selection.toString()) {
+      navigator.clipboard.writeText(selection.toString());
+    }
+  } else {
+    const selection = tab.term.getSelection();
+    if (selection) {
+      navigator.clipboard.writeText(selection);
+    }
   }
 });
 
 window.electronAPI.onTermPaste((text) => {
   const tab = tabInstances.get(activeTabId);
   if (!tab) return;
-  if (tab.inlineState === 'input') {
+  if (tab.type === 'chat') {
+    if (tab.chatInputEl) {
+      const input = tab.chatInputEl;
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + text + input.value.slice(end);
+      input.selectionStart = input.selectionEnd = start + text.length;
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    }
+  } else if (tab.inlineState === 'input') {
     tab.inlineInputBuffer += text;
     tab.term.write(S.input + text);
   } else if (tab.inlineState === 'idle') {
@@ -1261,9 +1849,14 @@ window.electronAPI.onTermPaste((text) => {
 window.electronAPI.onTermClear(() => {
   const tab = tabInstances.get(activeTabId);
   if (!tab) return;
-  tab.term.clear();
-  tab.term.write('\x1b[2J\x1b[H');
-  window.electronAPI.ptyWrite(tab.id, '\r');
+  if (tab.type === 'chat') {
+    // Clear chat messages
+    if (tab.chatMessagesEl) tab.chatMessagesEl.innerHTML = '';
+  } else {
+    tab.term.clear();
+    tab.term.write('\x1b[2J\x1b[H');
+    window.electronAPI.ptyWrite(tab.id, '\r');
+  }
 });
 
 // ============================================================
@@ -1280,6 +1873,7 @@ document.getElementById('ai-settings')!.addEventListener('click', () => {
 
 document.getElementById('tab-add')!.addEventListener('click', createAndSwitchNewTab);
 window.electronAPI.onTabNewRequest(() => createAndSwitchNewTab());
+window.electronAPI.onChatTabNewRequest(() => createAndSwitchNewChatTab());
 
 // ============================================================
 // 12. STARTUP — create first tab

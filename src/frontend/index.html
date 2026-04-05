@@ -16,7 +16,7 @@
   <!-- Terminal container: each tab creates a child .terminal-pane inside here -->
   <div id="terminal-container"></div>
 
-  <!-- Panel: slide-up overlay, toggled with Ctrl+Space or hint bar -->
+  <!-- Panel: slide-up overlay for model selection and info -->
   <div id="ai-panel">
     <div id="ai-header">
       <span>open-os</span>
@@ -26,26 +26,16 @@
       <button id="ai-close">&times;</button>
     </div>
 
-    <!-- Setup wizard: shown when no model is configured -->
+    <!-- Model selection: shown when no model or user wants to switch -->
     <div id="ai-setup" class="hidden">
       <p id="setup-message">Loading models from Ollama...</p>
       <div id="model-list"></div>
     </div>
 
-    <!-- Normal query mode: shown after model is selected -->
-    <div id="ai-query" class="hidden">
-      <div id="ai-input-row">
-        <input id="ai-input" type="text" placeholder="Ask open-os anything... (Enter to send)" />
-        <button id="ai-send">Send</button>
-      </div>
-
-      <pre id="ai-output"></pre>
-
-      <div id="ai-actions" class="hidden">
-        <button data-action="insert">[I]nsert into prompt</button>
-        <button data-action="run">[A]ccept &amp; Run</button>
-        <button data-action="cancel">[C]ancel</button>
-      </div>
+    <!-- Model info: shown when a model is selected -->
+    <div id="ai-model-info" class="hidden">
+      <div id="ai-model-details"></div>
+      <button id="ai-change-model" class="model-btn">Change model</button>
     </div>
   </div>
 

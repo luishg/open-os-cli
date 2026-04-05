@@ -23,19 +23,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // --- Tab lifecycle ---
   tabCreate: (tabId: string) => ipcRenderer.send('tab:create', tabId),
+  tabCreateChat: (tabId: string) => ipcRenderer.send('tab:create-chat', tabId),
   tabClose: (tabId: string) => ipcRenderer.send('tab:close', tabId),
   onTabNewRequest: (callback: () => void) => {
     ipcRenderer.on('tab:new-request', () => callback());
+  },
+  onChatTabNewRequest: (callback: () => void) => {
+    ipcRenderer.on('tab:new-chat-request', () => callback());
   },
 
   // --- AI (Ollama streaming) — tab-aware ---
   aiQuery: (tabId: string, prompt: string, context: string) =>
     ipcRenderer.send('ai:query', { tabId, prompt, context }),
+  chatQuery: (tabId: string, prompt: string) =>
+    ipcRenderer.send('chat:query', { tabId, prompt }),
   onAiChunk: (callback: (tabId: string, chunk: string) => void) => {
     ipcRenderer.on('ai:chunk', (_event, tabId, chunk) => callback(tabId, chunk));
   },
-  onAiDone: (callback: (tabId: string) => void) => {
-    ipcRenderer.on('ai:done', (_event, tabId) => callback(tabId));
+  onAiThinkingChunk: (callback: (tabId: string, chunk: string) => void) => {
+    ipcRenderer.on('ai:thinking-chunk', (_event, tabId, chunk) => callback(tabId, chunk));
+  },
+  onAiDone: (callback: (tabId: string, metrics?: Record<string, number> | null) => void) => {
+    ipcRenderer.on('ai:done', (_event, tabId, metrics) => callback(tabId, metrics));
   },
   onAiError: (callback: (tabId: string, error: string) => void) => {
     ipcRenderer.on('ai:error', (_event, tabId, error) => callback(tabId, error));
@@ -59,6 +68,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('ollama:list-models') as Promise<
       { ok: true; models: string[] } | { ok: false; error: string }
     >,
+  ollamaShowModel: (name: string) =>
+    ipcRenderer.invoke('ollama:show-model', name) as Promise<Record<string, unknown> | null>,
 
   // --- Hotkey (intercepted at Electron level, configurable) ---
   onToggleAIPanel: (callback: () => void) => {

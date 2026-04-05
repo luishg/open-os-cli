@@ -14,7 +14,9 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 - Full terminal emulator (bash/zsh/fish via PTY)
 - **Tabs** — open multiple independent terminals in one window, each with its own shell and AI context
-- Two AI interaction modes: **inline** (Ctrl+Space in the terminal) and **panel** (overlay UI)
+- **Chat tabs** — dedicated LLM conversation tabs with markdown rendering, thinking block support, and streaming
+- **Inline AI** mode (Ctrl+Space in the terminal) for command suggestions with approval gate
+- **Model panel** for selecting and inspecting Ollama models (capabilities, parameters, context window)
 - Streaming responses from local LLMs via Ollama
 - Commands are never executed without explicit user approval
 - First-run setup wizard for model selection
@@ -24,19 +26,19 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ---
 
-## Download & install (v0.5.2)
+## Download & install (v0.6.1)
 
-Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.5.2).
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.6.1).
 
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.5.2.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.5.2/open-os-cli-0.5.2.AppImage) | ~105 MB |
+| [`open-os-cli-0.6.1.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.6.1/open-os-cli-0.6.1.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-cli-0.5.2.AppImage
-./open-os-cli-0.5.2.AppImage
+chmod +x open-os-cli-0.6.1.AppImage
+./open-os-cli-0.6.1.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -55,10 +57,10 @@ Alternatively, download the `.pacman` package directly:
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.5.2.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.5.2/open-os-cli-0.5.2.pacman) | ~73 MB |
+| [`open-os-cli-0.6.1.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.6.1/open-os-cli-0.6.1.pacman) | ~73 MB |
 
 ```bash
-sudo pacman -U open-os-cli-0.5.2.pacman
+sudo pacman -U open-os-cli-0.6.1.pacman
 ```
 
 After installing, launch with:
@@ -77,10 +79,10 @@ sudo pacman -R open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli_0.5.2_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.5.2/open-os-cli_0.5.2_amd64.deb) | ~73 MB |
+| [`open-os-cli_0.6.1_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.6.1/open-os-cli_0.6.1_amd64.deb) | ~73 MB |
 
 ```bash
-sudo dpkg -i open-os-cli_0.5.2_amd64.deb
+sudo dpkg -i open-os-cli_0.6.1_amd64.deb
 ```
 
 After installing, launch with:
@@ -99,10 +101,10 @@ sudo dpkg -r open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.5.2.x86_64.rpm`](https://github.com/luishg/open-os-cli/releases/download/v0.5.2/open-os-cli-0.5.2.x86_64.rpm) | ~73 MB |
+| [`open-os-cli-0.6.1.x86_64.rpm`](https://github.com/luishg/open-os-cli/releases/download/v0.6.1/open-os-cli-0.6.1.x86_64.rpm) | ~73 MB |
 
 ```bash
-sudo dnf install open-os-cli-0.5.2.x86_64.rpm
+sudo dnf install open-os-cli-0.6.1.x86_64.rpm
 ```
 
 After installing, launch with:
@@ -121,7 +123,7 @@ sudo dnf remove open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.5.2-universal.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.5.2/open-os-cli-0.5.2-universal.dmg) | ~150 MB |
+| [`open-os-cli-0.6.1-universal.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.6.1/open-os-cli-0.6.1-universal.dmg) | ~150 MB |
 
 Open the `.dmg` and drag **open-os-cli** to your Applications folder. The DMG is a universal binary that works on both Apple Silicon (M1/M2/M3) and Intel Macs.
 
@@ -131,7 +133,7 @@ Open the `.dmg` and drag **open-os-cli** to your Applications folder. The DMG is
 
 | File | Size |
 |---|---|
-| [`open-os-cli.Setup.0.5.2.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.5.2/open-os-cli.Setup.0.5.2.exe) | ~78 MB |
+| [`open-os-cli.Setup.0.6.1.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.6.1/open-os-cli.Setup.0.6.1.exe) | ~78 MB |
 
 Run the installer. After installing, search for **open-os-cli** in the Start menu.
 
@@ -189,9 +191,26 @@ npm start          # builds TypeScript + launches the app
 
 Open multiple independent terminals in one window. Each tab has its own shell, AI conversation history, and inline AI state. The AI panel overlay is shared across tabs.
 
-- **New tab**: click the **+** button in the tab bar, or right-click → **New Tab**
+- **New terminal tab**: click the **+** button in the tab bar, or right-click → **New Tab**
+- **New chat tab**: right-click → **New Chat Tab**
 - **Switch tabs**: click on a tab
 - **Close tab**: click the **x** on a tab (hidden when only one tab remains)
+
+Terminal tabs are named "Terminal N" and chat tabs "Chat N". Both share the same tab bar and numbering sequence, so you can freely alternate between terminals and conversations.
+
+### Chat tabs
+
+Chat tabs provide a direct conversation interface with your configured LLM — no terminal, no commands, just chat.
+
+- **Open**: right-click → **New Chat Tab**
+- **Send a message**: type in the input field and press **Enter** (Shift+Enter for new line)
+- **Streaming**: responses appear token by token as the LLM generates them
+- **Markdown**: responses are rendered with markdown formatting (headers, bold, italic, code blocks, inline code, lists)
+- **Thinking blocks**: reasoning models (e.g. DeepSeek R1, Gemma 4, QwQ) show their thinking process in a styled block before the response (uses Ollama's native `think: true` API)
+- **Independent conversations**: each chat tab maintains its own conversation history (up to 25 exchanges)
+- **Ctrl+Space**: focuses the chat input (instead of entering inline mode)
+- **Copy/Paste**: works via right-click context menu
+- **Clear**: right-click → Clear empties the chat message history
 
 ### Inline mode (Ctrl+Space)
 Press **Ctrl+Space** anywhere in the terminal to enter AI mode:
@@ -213,18 +232,17 @@ Multi-line commands (heredocs, etc.) are fully supported — the preview shows t
 
 Press **Tab** to autocomplete file and directory names while typing your prompt — it works like shell tab-completion, resolving paths relative to your shell's current directory. Press **Escape** at any time to cancel. Use **Arrow Up/Down** to navigate through your previous AI prompts (history is kept for the session, works like shell history).
 
-### Panel mode (click hint bar)
-Click the hint bar at the bottom of the window for an overlay panel:
+### Model panel (click hint bar)
+Click the hint bar at the bottom of the window to open the model panel:
 
-1. Type your question in the input field
-2. The AI generates a response (shown after completion)
-3. Action buttons appear for suggested commands:
-   - **Insert** — writes the command to the terminal
-   - **Run** — executes it
-   - **Cancel** — closes the panel
+- **No model configured**: shows the list of installed Ollama models to select from
+- **Model selected**: shows detailed model info — family, parameters, quantization, context window, and capability badges (thinking, vision, tools)
+- **Change model**: click the "Change model" button to switch to a different model
+
+The panel is shared across all tabs. Ctrl+Space or clicking the hint bar toggles it.
 
 ### Context
-Both modes automatically capture the last 30 lines of terminal output and include them with your query, giving the AI context about what you're working on. The system prompt also includes your OS, distro, and shell to get platform-specific suggestions.
+Inline mode automatically captures the last 30 lines of terminal output and includes them with your query, giving the AI context about what you're working on. The system prompt also includes your OS, distro, and shell to get platform-specific suggestions. Chat tabs send no system prompt — the conversation is direct with the model.
 
 ---
 
@@ -232,9 +250,11 @@ Both modes automatically capture the last 30 lines of terminal output and includ
 
 ### Data flow
 
-Each tab has its own xterm.js terminal and PTY. All IPC messages include a `tabId` for routing.
+Each tab has its own xterm.js terminal and PTY (terminal tabs) or DOM chat interface (chat tabs). All IPC messages include a `tabId` for routing.
 
 ```
+TERMINAL TABS:
+
 User types in xterm.js (Tab N)
         │
         ▼
@@ -266,6 +286,21 @@ User types question → Enter
             Single command    Multiple commands       No commands
            [I]nsert [R]un    Sequential review:       exit mode
            [C]ancel          [R]un [S]kip [C]ancel
+
+
+CHAT TABS:
+
+User types message → Enter
+        │
+        ▼
+   [renderer.ts] ──IPC(chat:query)──► [main.ts] ──HTTP──► Ollama :11434
+                                           │                     │  (free-form text)
+                                    IPC (ai:chunk, tabId) ◄─────┘
+                                           │                (streaming)
+                                           ▼
+                              Markdown rendered in real-time
+                              Thinking blocks detected and styled
+                              Message appended to chat history
 ```
 
 ### Key design rule
@@ -300,17 +335,18 @@ open-os-cli/
 |---|---|
 | Window creation, menus, hotkeys | `main.ts` — `createWindow()` |
 | Per-tab PTY spawn and pipe | `main.ts` — `createTab()` / `destroyTab()`, `tabs` Map |
-| Ollama HTTP streaming | `main.ts` — `queryOllama(tabId, ...)` (per-tab conversation history) |
+| Ollama HTTP streaming | `main.ts` — `queryOllama(tabId, ...)` (terminal), `queryChatOllama(tabId, ...)` (chat) |
 | Model listing | `main.ts` — `listOllamaModels()` |
 | Config persistence | `main.ts` — `loadConfigRaw()` / `saveConfigKey()` / `resolveConfig()` |
 | Theme loading | `main.ts` — `loadTheme()` |
 | Keybinding parsing | `main.ts` — `parseKeybinding()` |
 | System info for prompt | `main.ts` — `buildSystemPrompt()` |
 | IPC bridge (tab-aware) | `preload.ts` — `contextBridge` (all PTY/AI channels include `tabId`) |
-| Tab management | `renderer.ts` — `TabInstance`, `createTabInstance()`, `switchToTab()`, `closeTab()` |
+| Tab management | `renderer.ts` — `TabInstance`, `createTabInstance()`, `createChatTabInstance()`, `switchToTab()`, `closeTab()` |
 | Terminal rendering | `renderer.ts` — per-tab xterm.js + FitAddon |
+| Chat tab UI & markdown | `renderer.ts` — `renderMarkdown()`, `parseChatResponse()`, `sendChatMessage()`, streaming render |
 | Inline AI mode | `renderer.ts` — per-tab state machine (idle/input/streaming/approval), prompt history, visual separators |
-| Panel AI mode | `renderer.ts` — shared overlay panel, operates on active tab |
+| Model panel | `renderer.ts` — shared overlay for model selection and info display |
 | Response routing | `renderer.ts` — chunks routed by `tabId` to correct `TabInstance` |
 | Welcome message | `renderer.ts` — `showWelcome(tab, version)` per tab |
 
