@@ -1,6 +1,6 @@
 {
   "name": "open-os-cli",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Terminal emulator with private, local AI powered by Ollama",
   "main": "dist/main.js",
   "license": "MIT",

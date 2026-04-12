@@ -165,22 +165,26 @@ function extractCommands(response: string): string[] {
 interface AiResponse { text: string; commands: string[]; }
 
 function parseAiResponse(raw: string): AiResponse {
-  try {
-    const parsed = JSON.parse(raw);
-    const text = typeof parsed.text === 'string' ? parsed.text
-      : typeof parsed.explanation === 'string' ? parsed.explanation
-      : typeof parsed.response === 'string' ? parsed.response : '';
-    const cmds = Array.isArray(parsed.commands) ? parsed.commands
-      : Array.isArray(parsed.command) ? parsed.command : [];
-    return {
-      text,
-      commands: cmds.filter((c: unknown): c is string =>
-        typeof c === 'string' && c.trim().length > 0),
-    };
-  } catch {
-    // Fallback for non-JSON responses (model didn't honour format)
-    return { text: raw, commands: extractCommands(raw) };
-  }
+  // Strip markdown code fences that some models wrap around JSON
+  const stripped = raw.replace(/^```\w*\s*\n?([\s\S]*?)\n?\s*```$/m, '$1').trim();
+  const tryParse = (s: string): AiResponse | null => {
+    try {
+      const parsed = JSON.parse(s);
+      const text = typeof parsed.text === 'string' ? parsed.text
+        : typeof parsed.explanation === 'string' ? parsed.explanation
+        : typeof parsed.response === 'string' ? parsed.response : '';
+      const cmds = Array.isArray(parsed.commands) ? parsed.commands
+        : Array.isArray(parsed.command) ? parsed.command : [];
+      return {
+        text,
+        commands: cmds.filter((c: unknown): c is string =>
+          typeof c === 'string' && c.trim().length > 0),
+      };
+    } catch {
+      return null;
+    }
+  };
+  return tryParse(raw) ?? tryParse(stripped) ?? { text: raw, commands: extractCommands(raw) };
 }
 
 function formatCommandPreview(cmd: string): string {
