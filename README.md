@@ -437,17 +437,53 @@ Ollama connection defaults to `localhost:11434`.
 
 ## Updating the AUR package
 
-After publishing a new GitHub Release, update the AUR package so Arch users get the new version:
+After publishing a new GitHub Release, update the AUR package so Arch users get the new version.
+
+### First-time setup on a new machine
+
+If you don't have the AUR repo cloned locally yet:
 
 ```bash
-# 1. Get the sha256 of the new .pacman file
-sha256sum release/open-os-cli-<version>.pacman
+# 1. Generate a dedicated SSH key for AUR
+ssh-keygen -t ed25519 -C "aur@<hostname>" -f ~/.ssh/aur_ed25519
+
+# 2. Print the public key and add it to your AUR account
+#    https://aur.archlinux.org/account/ → "SSH Public Key"
+#    The field accepts multiple keys (one per line), so you can add
+#    this one alongside keys from your other machines.
+cat ~/.ssh/aur_ed25519.pub
+
+# 3. Tell SSH to use this key for AUR
+cat >> ~/.ssh/config <<'EOF'
+Host aur.archlinux.org
+  IdentityFile ~/.ssh/aur_ed25519
+  User aur
+EOF
+chmod 600 ~/.ssh/config ~/.ssh/aur_ed25519
+
+# 4. Verify the connection (should greet you with "Interactive shell is disabled...")
+ssh aur@aur.archlinux.org help
+
+# 5. Clone the AUR repo
+mkdir -p ~/open-os-cli-aur && cd ~/open-os-cli-aur
+git clone ssh://aur@aur.archlinux.org/open-os-cli-bin.git aur-repo
+```
+
+### Publishing a new version
+
+```bash
+# 1. Get the sha256 of the .pacman file.
+#    Easiest: download it from the GitHub Release (no need to rebuild locally).
+curl -LO https://github.com/luishg/open-os-cli/releases/download/v<version>/open-os-cli-<version>.pacman
+sha256sum open-os-cli-<version>.pacman
+#    Alternative if you built locally:
+#    sha256sum release/open-os-cli-<version>.pacman
 
 # 2. Go to the AUR repo (outside the main project)
 cd ~/open-os-cli-aur/aur-repo
 
 # 3. Update PKGBUILD: bump pkgver and replace sha256sums
-#    Edit pkgver=<new-version> and sha256sums=('<new-hash>')
+#    Edit pkgver=<new-version>, reset pkgrel=1, and sha256sums=('<new-hash>')
 
 # 4. Regenerate .SRCINFO
 makepkg --printsrcinfo > .SRCINFO
