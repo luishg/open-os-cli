@@ -27,19 +27,19 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ---
 
-## Download & install (v0.7.1)
+## Download & install (v0.7.2)
 
-Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.7.1).
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.7.2).
 
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.7.1.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.7.1/open-os-cli-0.7.1.AppImage) | ~105 MB |
+| [`open-os-cli-0.7.2.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.7.2/open-os-cli-0.7.2.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-cli-0.7.1.AppImage
-./open-os-cli-0.7.1.AppImage
+chmod +x open-os-cli-0.7.2.AppImage
+./open-os-cli-0.7.2.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -58,10 +58,10 @@ Alternatively, download the `.pacman` package directly:
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.7.1.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.7.1/open-os-cli-0.7.1.pacman) | ~73 MB |
+| [`open-os-cli-0.7.2.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.7.2/open-os-cli-0.7.2.pacman) | ~73 MB |
 
 ```bash
-sudo pacman -U open-os-cli-0.7.1.pacman
+sudo pacman -U open-os-cli-0.7.2.pacman
 ```
 
 After installing, launch with:
@@ -80,10 +80,10 @@ sudo pacman -R open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli_0.7.1_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.7.1/open-os-cli_0.7.1_amd64.deb) | ~73 MB |
+| [`open-os-cli_0.7.2_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.7.2/open-os-cli_0.7.2_amd64.deb) | ~73 MB |
 
 ```bash
-sudo dpkg -i open-os-cli_0.7.1_amd64.deb
+sudo dpkg -i open-os-cli_0.7.2_amd64.deb
 ```
 
 After installing, launch with:
@@ -102,10 +102,10 @@ sudo dpkg -r open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.7.1.x86_64.rpm`](https://github.com/luishg/open-os-cli/releases/download/v0.7.1/open-os-cli-0.7.1.x86_64.rpm) | ~73 MB |
+| [`open-os-cli-0.7.2.x86_64.rpm`](https://github.com/luishg/open-os-cli/releases/download/v0.7.2/open-os-cli-0.7.2.x86_64.rpm) | ~73 MB |
 
 ```bash
-sudo dnf install open-os-cli-0.7.1.x86_64.rpm
+sudo dnf install open-os-cli-0.7.2.x86_64.rpm
 ```
 
 After installing, launch with:
@@ -124,7 +124,7 @@ sudo dnf remove open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.7.1-universal.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.7.1/open-os-cli-0.7.1-universal.dmg) | ~150 MB |
+| [`open-os-cli-0.7.2-universal.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.7.2/open-os-cli-0.7.2-universal.dmg) | ~150 MB |
 
 Open the `.dmg` and drag **open-os-cli** to your Applications folder. The DMG is a universal binary that works on both Apple Silicon (M1/M2/M3) and Intel Macs.
 
@@ -134,7 +134,7 @@ Open the `.dmg` and drag **open-os-cli** to your Applications folder. The DMG is
 
 | File | Size |
 |---|---|
-| [`open-os-cli.Setup.0.7.1.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.7.1/open-os-cli.Setup.0.7.1.exe) | ~78 MB |
+| [`open-os-cli.Setup.0.7.2.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.7.2/open-os-cli.Setup.0.7.2.exe) | ~78 MB |
 
 Run the installer. After installing, search for **open-os-cli** in the Start menu.
 
