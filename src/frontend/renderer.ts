@@ -758,13 +758,18 @@ function createChatTabInstance(): TabInstance {
   messagesEl.className = 'chat-messages';
   paneEl.appendChild(messagesEl);
 
-  // Input row
+  // Input row — Claude Code style: "> " prompt + multiline textarea
   const inputRow = document.createElement('div');
   inputRow.className = 'chat-input-row';
 
+  const promptEl = document.createElement('span');
+  promptEl.className = 'chat-input-prompt';
+  promptEl.textContent = '>';
+  inputRow.appendChild(promptEl);
+
   const inputEl = document.createElement('textarea');
   inputEl.className = 'chat-input';
-  inputEl.placeholder = 'Type a message... (Enter to send, Shift+Enter for new line)';
+  inputEl.placeholder = 'Type a message...';
   inputEl.rows = 1;
   inputRow.appendChild(inputEl);
 
@@ -915,51 +920,70 @@ async function loadChatModelInfo(tab: TabInstance): Promise<void> {
   if (!tab.chatModelInfoEl) return;
   const config = await window.electronAPI.configGet();
   const modelName = config.model;
+
+  const sendHint =
+    '<span class="chat-model-info-hint">' +
+    '<kbd>Enter</kbd> send ' +
+    '<span class="chat-model-info-sep">·</span> ' +
+    '<kbd>Shift</kbd>+<kbd>Enter</kbd> newline' +
+    '</span>';
+
   if (!modelName) {
-    tab.chatModelInfoEl.innerHTML = '<span class="chat-model-info-detail">No model configured</span>';
+    tab.chatModelInfoEl.innerHTML =
+      '<span class="chat-model-info-detail">No model configured</span>' + sendHint;
     return;
   }
 
-  tab.chatModelInfoEl.innerHTML = `<span class="chat-model-info-name">${escapeHtml(modelName)}</span>`;
-
   const info = await window.electronAPI.ollamaShowModel(modelName);
-  if (!info) return;
 
-  const parts: string[] = [];
+  const groups: string[] = [];
+  groups.push(
+    `<span class="chat-model-info-group"><span class="chat-model-info-name">${escapeHtml(modelName)}</span></span>`
+  );
 
-  // Parameter size and quantization from details
-  const details = info.details as Record<string, string> | undefined;
-  if (details?.parameter_size) parts.push(details.parameter_size);
-  if (details?.quantization_level) parts.push(details.quantization_level);
+  if (info) {
+    const parts: string[] = [];
 
-  // Context length from model_info
-  const modelInfo = info.model_info as Record<string, unknown> | undefined;
-  const family = details?.family;
-  if (modelInfo && family) {
-    const ctxKey = `${family}.context_length`;
-    const ctxLen = modelInfo[ctxKey] as number | undefined;
-    if (ctxLen && ctxLen > 0) {
-      tab.chatModelContextLength = ctxLen;
-      parts.push(formatContextSize(ctxLen) + ' ctx');
+    const details = info.details as Record<string, string> | undefined;
+    if (details?.parameter_size) parts.push(details.parameter_size);
+    if (details?.quantization_level) parts.push(details.quantization_level);
+
+    const modelInfo = info.model_info as Record<string, unknown> | undefined;
+    const family = details?.family;
+    if (modelInfo && family) {
+      const ctxKey = `${family}.context_length`;
+      const ctxLen = modelInfo[ctxKey] as number | undefined;
+      if (ctxLen && ctxLen > 0) {
+        tab.chatModelContextLength = ctxLen;
+        parts.push(formatContextSize(ctxLen) + ' ctx');
+      }
+    }
+
+    if (parts.length > 0) {
+      groups.push(
+        `<span class="chat-model-info-group"><span class="chat-model-info-detail">${parts.join(
+          ' \u00b7 '
+        )}</span></span>`
+      );
+    }
+
+    const capabilities = info.capabilities as string[] | undefined;
+    const badges: string[] = [];
+    if (capabilities) {
+      if (capabilities.includes('thinking'))
+        badges.push('<span class="chat-capability-badge thinking">thinking</span>');
+      if (capabilities.includes('vision'))
+        badges.push('<span class="chat-capability-badge vision">vision</span>');
+      if (capabilities.includes('tools'))
+        badges.push('<span class="chat-capability-badge tools">tools</span>');
+    }
+    if (badges.length > 0) {
+      groups.push(`<span class="chat-model-info-group">${badges.join(' ')}</span>`);
     }
   }
 
-  // Capabilities badges
-  const capabilities = info.capabilities as string[] | undefined;
-  const badges: string[] = [];
-  if (capabilities) {
-    if (capabilities.includes('thinking')) badges.push('<span class="chat-capability-badge thinking">thinking</span>');
-    if (capabilities.includes('vision')) badges.push('<span class="chat-capability-badge vision">vision</span>');
-    if (capabilities.includes('tools')) badges.push('<span class="chat-capability-badge tools">tools</span>');
-  }
-
-  let html = `<span class="chat-model-info-name">${escapeHtml(modelName)}</span>`;
-  if (parts.length > 0) {
-    html += ` <span class="chat-model-info-detail">${parts.join(' \u00b7 ')}</span>`;
-  }
-  html += ' ' + badges.join(' ');
-
-  tab.chatModelInfoEl.innerHTML = html;
+  const sep = '<span class="chat-model-info-sep">·</span>';
+  tab.chatModelInfoEl.innerHTML = groups.join(` ${sep} `) + sendHint;
 }
 
 async function createAndSwitchNewChatTab(): Promise<void> {
@@ -1274,7 +1298,7 @@ function enterInlineMode(tab: TabInstance): void {
   tab.inlineHistoryStash = '';
 
   inlineSeparatorOpen(tab);
-  tab.term.write(`${S.prompt}open-os > ${S.input}`);
+  tab.term.write(`${S.prompt}> ${S.input}`);
 }
 
 function handleInlineInput(tab: TabInstance, data: string): void {
@@ -1588,7 +1612,7 @@ async function showSetup(): Promise<void> {
     return;
   }
 
-  setupMessage.textContent = 'Select a model:';
+  setupMessage.textContent = 'Select a model';
   for (const name of result.models) {
     const btn = document.createElement('button');
     btn.className = 'model-btn';
@@ -1927,6 +1951,7 @@ document.getElementById('ai-settings')!.addEventListener('click', () => {
 // ============================================================
 
 document.getElementById('tab-add')!.addEventListener('click', createAndSwitchNewTab);
+document.getElementById('tab-add-chat')!.addEventListener('click', createAndSwitchNewChatTab);
 window.electronAPI.onTabNewRequest(() => createAndSwitchNewTab());
 window.electronAPI.onChatTabNewRequest(() => createAndSwitchNewChatTab());
 

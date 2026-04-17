@@ -103,6 +103,28 @@ body {
   color: var(--accent, #00b4d8);
 }
 
+/* "+ chat" — right-aligned shortcut to open a chat-only tab */
+#tab-add-chat {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--hint-bar-color, #3a5a7c);
+  font-family: monospace;
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 0.2s;
+  white-space: nowrap;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  border-left: 1px solid #112240;
+}
+
+#tab-add-chat:hover {
+  color: var(--accent, #00b4d8);
+}
+
 /* --- Terminal container: holds per-tab terminal panes ------ */
 
 #terminal-container {
@@ -185,17 +207,24 @@ body {
 #ai-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: 10px;
+  padding: 8px 14px;
   background: var(--panel-header-bg, #0a1628);
   color: #e0e0e0;
   font-family: monospace;
   font-size: 13px;
+  border-bottom: 1px solid #112240;
 }
 
 #ai-header span:first-child {
   font-weight: bold;
   color: var(--accent, #00b4d8);
+}
+
+#ai-header span:first-child::before {
+  content: '> ';
+  color: var(--accent, #00b4d8);
+  font-weight: bold;
 }
 
 #ai-status {
@@ -236,10 +265,11 @@ body {
 /* --- Setup wizard ------------------------------------------ */
 
 #ai-setup {
-  padding: 12px;
+  padding: 12px 14px;
   color: #e0e0e0;
   font-family: monospace;
   font-size: 13px;
+  overflow-y: auto;
 }
 
 #ai-setup.hidden {
@@ -247,37 +277,65 @@ body {
 }
 
 #setup-message {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   white-space: pre-wrap;
-  color: #3a5a7c;
+  color: #7a8899;
+}
+
+#setup-message::before {
+  content: '> ';
+  color: var(--accent, #00b4d8);
+  font-weight: bold;
 }
 
 #model-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 200px;
+  gap: 0;
+  max-height: 240px;
   overflow-y: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: #3a5a7c transparent;
+  border-top: 1px solid #2a3a4c;
+  border-bottom: 1px solid #2a3a4c;
 }
-#model-list::-webkit-scrollbar { display: none; }
+#model-list::-webkit-scrollbar { width: 6px; }
+#model-list::-webkit-scrollbar-track { background: transparent; }
+#model-list::-webkit-scrollbar-thumb { background: #3a5a7c; border-radius: 3px; }
 
+/* Model list entries — CLI-style rows with chevron marker, not cards */
 .model-btn {
-  padding: 8px 12px;
-  background: #1a1a2e;
+  position: relative;
+  padding: 7px 12px 7px 24px;
+  background: transparent;
   color: #e0e0e0;
-  border: 1px solid #112240;
-  border-radius: 4px;
+  border: none;
+  border-radius: 0;
   font-family: monospace;
   font-size: 13px;
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.2s, background 0.2s;
+  transition: background 0.15s, color 0.15s;
+}
+
+.model-btn::before {
+  content: '›';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #3a5a7c;
+  font-weight: bold;
+  transition: color 0.15s;
 }
 
 .model-btn:hover {
-  border-color: var(--accent, #00b4d8);
   background: #112240;
+  color: #fff;
+}
+
+.model-btn:hover::before {
+  color: var(--accent, #00b4d8);
 }
 
 /* --- Model label in header --------------------------------- */
@@ -296,10 +354,11 @@ body {
 /* --- Model info panel -------------------------------------- */
 
 #ai-model-info {
-  padding: 12px;
+  padding: 12px 14px;
   color: #e0e0e0;
   font-family: monospace;
   font-size: 13px;
+  overflow-y: auto;
 }
 
 #ai-model-info.hidden {
@@ -307,13 +366,19 @@ body {
 }
 
 #ai-model-details {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   line-height: 1.6;
 }
 
 #ai-model-details .panel-model-name {
-  font-size: 1.1em;
+  font-size: 1.05em;
   font-weight: bold;
+  color: var(--accent, #00b4d8);
+  margin-bottom: 6px;
+}
+
+#ai-model-details .panel-model-name::before {
+  content: '> ';
   color: var(--accent, #00b4d8);
 }
 
@@ -321,8 +386,8 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
-  margin: 4px 0;
-  color: #7a8899;
+  margin: 3px 0;
+  color: #9aa4b8;
   font-size: 12px;
 }
 
@@ -333,7 +398,7 @@ body {
 
 #ai-model-details .panel-badge {
   display: inline-block;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: 3px;
   font-size: 11px;
   border: 1px solid #2a3a4c;
@@ -346,9 +411,28 @@ body {
 #ai-model-details .panel-badge.tools { border-color: #b45309; color: #fbbf24; }
 #ai-model-details .panel-badge.completion { border-color: #166534; color: #4ade80; }
 
+/* "Change model" — subtle text action, not a card */
 #ai-change-model {
-  margin-top: 8px;
-  width: auto;
+  margin-top: 10px;
+  padding: 4px 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: #7a8899;
+  font-family: monospace;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+#ai-change-model::before {
+  content: '‹ ';
+  color: inherit;
+}
+
+#ai-change-model:hover {
+  color: var(--accent, #00b4d8);
 }
 
 /* ============================================================
@@ -548,35 +632,49 @@ body {
   margin: 2px 0;
 }
 
-/* Input area — unified container (ChatGPT / LM Studio style) */
+/* Input area — Claude Code style: two horizontal rules framing a prompt */
 .chat-input-row {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 12px 14px;
-  background: #0d1b2a;
-  border: 1px solid #112240;
-  border-radius: 12px;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 2px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid #2a3a4c;
+  border-bottom: 1px solid #2a3a4c;
+  border-radius: 0;
   flex-shrink: 0;
   transition: border-color 0.2s;
 }
 
 .chat-input-row:focus-within {
-  border-color: var(--accent, #00b4d8);
+  border-top-color: var(--accent, #00b4d8);
+  border-bottom-color: var(--accent, #00b4d8);
+}
+
+.chat-input-prompt {
+  color: var(--accent, #00b4d8);
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: bold;
+  line-height: 1.5;
+  user-select: none;
+  padding-top: 2px;
+  flex-shrink: 0;
 }
 
 .chat-input {
   flex: 1;
-  padding: 4px 2px;
+  padding: 2px 0;
   background: transparent;
   border: none;
   color: #e0e0e0;
   font-family: inherit;
-  font-size: 14px;
+  font-size: inherit;
   outline: none;
   resize: none;
-  min-height: 24px;
+  min-height: 22px;
   max-height: 150px;
   line-height: 1.5;
 }
@@ -589,47 +687,57 @@ body {
   opacity: 0.5;
 }
 
+/* Send button — hidden; Enter sends. Kept in DOM for programmatic fallback. */
 .chat-send {
-  padding: 6px 14px;
-  background: var(--accent, #00b4d8);
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-family: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  line-height: 1.4;
-  transition: background 0.2s;
-  flex-shrink: 0;
+  display: none;
 }
 
-.chat-send:hover {
-  background: #0096c7;
-}
-
-.chat-send:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-/* Model info bar (below input) */
+/* Model info / footer bar (below input) — CLI-style: subtle but legible */
 .chat-model-info {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 2px 0 2px;
-  font-size: 0.78em;
-  color: #555e70;
+  gap: 10px;
+  padding: 6px 2px 2px 2px;
+  font-size: 0.9em;
+  color: #7a8899;
   flex-shrink: 0;
 }
 
+.chat-model-info-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-model-info-sep {
+  color: #2a3a4c;
+  user-select: none;
+}
+
 .chat-model-info-name {
-  color: #7a8899;
+  color: var(--accent, #00b4d8);
+  font-weight: normal;
 }
 
 .chat-model-info-detail {
+  color: #9aa4b8;
+}
+
+.chat-model-info-hint {
   color: #555e70;
+  margin-left: auto;
+}
+
+.chat-model-info-hint kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid #2a3a4c;
+  border-radius: 3px;
+  color: #9aa4b8;
+  font-family: inherit;
+  font-size: 0.92em;
+  line-height: 1.4;
 }
 
 .chat-capability-badge {
