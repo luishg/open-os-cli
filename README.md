@@ -15,6 +15,7 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 - Full terminal emulator (bash/zsh/fish via PTY)
 - **Tabs** — open multiple independent terminals in one window, each with its own shell and AI context
 - **Chat tabs** — dedicated LLM conversation tabs with markdown rendering, thinking block support, and streaming
+- **Agent mode** — chat tabs can search the web (DuckDuckGo) and read any public URL when the model decides it needs information beyond its training data (only for models with the `tools` capability; zero new dependencies, no API keys)
 - **Inline AI** mode (Ctrl+Space in the terminal) for command suggestions with approval gate
 - **Model panel** for selecting and inspecting Ollama models (capabilities, parameters, context window)
 - Streaming responses from local LLMs via Ollama
@@ -26,19 +27,19 @@ Part of **Open-OS** (https://open-os.com/): open, smart tools that make technolo
 
 ---
 
-## Download & install (v0.6.2)
+## Download & install (v0.7.0)
 
-Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.6.2).
+Download from the [GitHub Releases page](https://github.com/luishg/open-os-cli/releases/tag/v0.7.0).
 
 ### AppImage (any Linux distro)
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.6.2.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.6.2/open-os-cli-0.6.2.AppImage) | ~105 MB |
+| [`open-os-cli-0.7.0.AppImage`](https://github.com/luishg/open-os-cli/releases/download/v0.7.0/open-os-cli-0.7.0.AppImage) | ~105 MB |
 
 ```bash
-chmod +x open-os-cli-0.6.2.AppImage
-./open-os-cli-0.6.2.AppImage
+chmod +x open-os-cli-0.7.0.AppImage
+./open-os-cli-0.7.0.AppImage
 ```
 
 No installation needed. Works on any Linux distro with FUSE support. To integrate with your system launcher, use [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) or move it to `~/Applications/` and create a `.desktop` entry.
@@ -57,10 +58,10 @@ Alternatively, download the `.pacman` package directly:
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.6.2.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.6.2/open-os-cli-0.6.2.pacman) | ~73 MB |
+| [`open-os-cli-0.7.0.pacman`](https://github.com/luishg/open-os-cli/releases/download/v0.7.0/open-os-cli-0.7.0.pacman) | ~73 MB |
 
 ```bash
-sudo pacman -U open-os-cli-0.6.2.pacman
+sudo pacman -U open-os-cli-0.7.0.pacman
 ```
 
 After installing, launch with:
@@ -79,10 +80,10 @@ sudo pacman -R open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli_0.6.2_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.6.2/open-os-cli_0.6.2_amd64.deb) | ~73 MB |
+| [`open-os-cli_0.7.0_amd64.deb`](https://github.com/luishg/open-os-cli/releases/download/v0.7.0/open-os-cli_0.7.0_amd64.deb) | ~73 MB |
 
 ```bash
-sudo dpkg -i open-os-cli_0.6.2_amd64.deb
+sudo dpkg -i open-os-cli_0.7.0_amd64.deb
 ```
 
 After installing, launch with:
@@ -101,10 +102,10 @@ sudo dpkg -r open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.6.2.x86_64.rpm`](https://github.com/luishg/open-os-cli/releases/download/v0.6.2/open-os-cli-0.6.2.x86_64.rpm) | ~73 MB |
+| [`open-os-cli-0.7.0.x86_64.rpm`](https://github.com/luishg/open-os-cli/releases/download/v0.7.0/open-os-cli-0.7.0.x86_64.rpm) | ~73 MB |
 
 ```bash
-sudo dnf install open-os-cli-0.6.2.x86_64.rpm
+sudo dnf install open-os-cli-0.7.0.x86_64.rpm
 ```
 
 After installing, launch with:
@@ -123,7 +124,7 @@ sudo dnf remove open-os-cli
 
 | File | Size |
 |---|---|
-| [`open-os-cli-0.6.2-universal.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.6.2/open-os-cli-0.6.2-universal.dmg) | ~150 MB |
+| [`open-os-cli-0.7.0-universal.dmg`](https://github.com/luishg/open-os-cli/releases/download/v0.7.0/open-os-cli-0.7.0-universal.dmg) | ~150 MB |
 
 Open the `.dmg` and drag **open-os-cli** to your Applications folder. The DMG is a universal binary that works on both Apple Silicon (M1/M2/M3) and Intel Macs.
 
@@ -133,7 +134,7 @@ Open the `.dmg` and drag **open-os-cli** to your Applications folder. The DMG is
 
 | File | Size |
 |---|---|
-| [`open-os-cli.Setup.0.6.2.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.6.2/open-os-cli.Setup.0.6.2.exe) | ~78 MB |
+| [`open-os-cli.Setup.0.7.0.exe`](https://github.com/luishg/open-os-cli/releases/download/v0.7.0/open-os-cli.Setup.0.7.0.exe) | ~78 MB |
 
 Run the installer. After installing, search for **open-os-cli** in the Start menu.
 
@@ -211,6 +212,30 @@ Chat tabs provide a direct conversation interface with your configured LLM — n
 - **Ctrl+Space**: focuses the chat input (instead of entering inline mode)
 - **Copy/Paste**: works via right-click context menu
 - **Clear**: right-click → Clear empties the chat message history
+
+### Agent mode (web tools)
+
+When the configured model exposes the `tools` capability (look for the 🔧 `tools` badge in the model info bar), chat tabs give it access to two built-in web tools:
+
+| Tool | What it does |
+|---|---|
+| `web_search(query)` | Searches the web via DuckDuckGo and returns the top 5 results (title, URL, snippet). |
+| `fetch_url(url)` | Downloads any public http/https page and extracts up to 5000 chars of plain text. |
+
+The model decides when to use them. Examples that typically trigger a tool call:
+
+- *"What's the latest version of Electron?"* → `web_search`
+- *"Summarize the home page of https://ollama.com"* → `fetch_url`
+- *"Find the main headlines on www.marca.com right now"* → `fetch_url` (or `web_search` first)
+
+Tool calls and their results appear **inline in the conversation** as styled blocks — you always see what the agent consulted before it answered. The agent loop is capped at 4 rounds per query to prevent runaway chains.
+
+**Privacy & safety:**
+- Web requests only fire when the model decides to use a tool — there is no background traffic.
+- `fetch_url` only accepts `text/html` and `text/plain`, refuses non-public hosts (localhost, 10/8, 192.168/16, 169.254/16, 172.16/12, IPv6 loopback/ULA), follows at most 3 redirects, and aborts after 10s or 1 MB.
+- No API keys, no accounts, no external services beyond DuckDuckGo and whatever URL you asked about.
+
+**Disable it** by setting `chat-tools-enabled = false` in `~/.config/open-os-cli/config.conf` — chat then behaves like plain LLM conversation.
 
 ### Inline mode (Ctrl+Space)
 Press **Ctrl+Space** anywhere in the terminal to enter AI mode:
@@ -335,7 +360,9 @@ open-os-cli/
 |---|---|
 | Window creation, menus, hotkeys | `main.ts` — `createWindow()` |
 | Per-tab PTY spawn and pipe | `main.ts` — `createTab()` / `destroyTab()`, `tabs` Map |
-| Ollama HTTP streaming | `main.ts` — `queryOllama(tabId, ...)` (terminal), `queryChatOllama(tabId, ...)` (chat) |
+| Ollama HTTP streaming | `main.ts` — `queryOllama(tabId, ...)` (terminal), `queryChatOllama(tabId, ...)` (chat agent loop) |
+| Agent loop & tool dispatch | `main.ts` — `streamOneRound()`, `modelSupportsTools()`, `buildChatSystemPrompt()` |
+| Web tools (search / fetch) | `src/tools/web.ts` — `TOOL_SCHEMAS`, `webSearch()`, `fetchUrl()`, `executeTool()` |
 | Model listing | `main.ts` — `listOllamaModels()` |
 | Config persistence | `main.ts` — `loadConfigRaw()` / `saveConfigKey()` / `resolveConfig()` |
 | Theme loading | `main.ts` — `loadTheme()` |
@@ -380,6 +407,9 @@ window-scrollback = 1000
 
 # Keybindings
 keybind-ai-trigger = Ctrl+Space
+
+# Chat (agent / web tools). Requires a model with the "tools" capability.
+chat-tools-enabled = true
 ```
 
 | Key | Values | Default |
@@ -393,6 +423,7 @@ keybind-ai-trigger = Ctrl+Space
 | `window-padding-*` | 0–200 (px) | `16` / `20` / `24` / `20` |
 | `window-scrollback` | 0–100000 | `1000` |
 | `keybind-ai-trigger` | `Modifier+Key` | `Ctrl+Space` |
+| `chat-tools-enabled` | `true` / `false` | `true` |
 
 Changes take effect on restart. Lines starting with `#` are comments.
 
@@ -429,9 +460,9 @@ Ollama connection defaults to `localhost:11434`.
 
 ## Principles
 1. **No silent execution** — AI never runs commands without explicit user approval.
-2. **Transparency** — AI output is visually distinct from terminal output.
-3. **Local-first** — Uses Ollama for fully local inference. No accounts, no telemetry.
-4. **Small scope** — Focused terminal + AI assistance. No plugins, no agents, no automation.
+2. **Transparency** — AI output is visually distinct from terminal output. Agent tool calls and their results are rendered inline, so you always see what the agent consulted.
+3. **Local-first** — Uses Ollama for fully local inference. No accounts, no telemetry. The agent's web tools have no API keys and depend only on DuckDuckGo and the URLs you ask about.
+4. **Bounded agency** — The chat agent can *read* the web (search + fetch URL) but never writes to your system. All terminal commands still require explicit approval. The agent loop is capped at 4 tool rounds per query.
 
 ---
 

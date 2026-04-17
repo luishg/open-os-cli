@@ -14,15 +14,25 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as http from 'http';
 import { execSync, spawn } from 'child_process';
+import { TOOL_SCHEMAS, executeTool } from './tools/web';
 
 let mainWindow: BrowserWindow;
 
 // Conversation history for Ollama multi-turn context
+interface ToolCall {
+  function: {
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+}
 interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  tool_calls?: ToolCall[];
+  tool_name?: string;
 }
 const MAX_HISTORY_MESSAGES = 20; // 10 exchanges (user + assistant pairs)
+const MAX_TOOL_ROUNDS = 4;        // agent-loop safety cap in chat mode
 
 // Per-tab state: each tab has its own PTY (terminal) or just conversation history (chat)
 interface TabState {
@@ -56,6 +66,7 @@ interface ResolvedConfig {
     scrollback: number;
   };
   keybindings: { aiTrigger: string };
+  chat: { toolsEnabled: boolean };
 }
 
 interface ThemeColors {
@@ -107,6 +118,7 @@ const DEFAULT_CONFIG: ResolvedConfig = {
     scrollback: 1000,
   },
   keybindings: { aiTrigger: 'Ctrl+Space' },
+  chat: { toolsEnabled: true },
 };
 
 const DEFAULT_THEME: ThemeColors = {
@@ -253,6 +265,11 @@ function resolveConfig(): ResolvedConfig {
     keybindings: {
       aiTrigger: raw['keybind-ai-trigger']?.trim() || d.keybindings.aiTrigger,
     },
+    chat: {
+      toolsEnabled: raw['chat-tools-enabled'] === 'false' ? false
+        : raw['chat-tools-enabled'] === 'true' ? true
+        : d.chat.toolsEnabled,
+    },
   };
 }
 
@@ -389,6 +406,12 @@ function ensureConfigFile(): void {
       comment: 'Keybindings',
       entries: [
         ['keybind-ai-trigger', existing['keybind-ai-trigger'] || d.keybindings.aiTrigger],
+      ],
+    },
+    {
+      comment: 'Chat (agent / web tools). Requires a model with the "tools" capability.',
+      entries: [
+        ['chat-tools-enabled', existing['chat-tools-enabled'] || String(d.chat.toolsEnabled)],
       ],
     },
   ]);
@@ -725,9 +748,124 @@ function queryOllama(tabId: string, prompt: string, context: string): void {
   req.end();
 }
 
-// --- Chat-mode Ollama query (free-form text, no JSON format, no system prompt) ---
+// --- Chat-mode Ollama query (free-form text with optional tool-use agent loop) ---
 
-function queryChatOllama(tabId: string, prompt: string): void {
+// Capability cache: avoid re-hitting /api/show every turn for the same model.
+const toolCapabilityCache = new Map<string, boolean>();
+
+async function modelSupportsTools(model: string): Promise<boolean> {
+  if (toolCapabilityCache.has(model)) return toolCapabilityCache.get(model)!;
+  const info = await showOllamaModel(model);
+  const caps = (info as { capabilities?: unknown } | null)?.capabilities;
+  const supported = Array.isArray(caps) && caps.includes('tools');
+  toolCapabilityCache.set(model, supported);
+  return supported;
+}
+
+function buildChatSystemPrompt(): string {
+  return (
+    'You are a helpful assistant. You have access to two tools: ' +
+    'web_search(query) to search the web, and fetch_url(url) to read a web page. ' +
+    'Use tools ONLY when you need information outside your training data — recent events, ' +
+    'specific URLs, or real-time facts. Do NOT call tools for general conversation, ' +
+    'coding questions, or topics you already know. ' +
+    'When you do use results from tools, cite the source URLs in your final answer.'
+  );
+}
+
+interface RoundResult {
+  text: string;
+  toolCalls: ToolCall[];
+  metrics: Record<string, number> | null;
+}
+
+// One streaming round against /api/chat. Emits ai:chunk/ai:thinking-chunk as tokens arrive.
+// Does NOT emit ai:done — the outer loop decides whether this was the final round.
+function streamOneRound(
+  tabId: string,
+  model: string,
+  messages: ChatMessage[],
+  useTools: boolean,
+): Promise<RoundResult> {
+  return new Promise((resolve, reject) => {
+    const payload: Record<string, unknown> = { model, messages, stream: true, think: true };
+    if (useTools) payload.tools = TOOL_SCHEMAS;
+    const body = JSON.stringify(payload);
+
+    let text = '';
+    const toolCalls: ToolCall[] = [];
+    let metrics: Record<string, number> | null = null;
+
+    const req = http.request(
+      {
+        hostname: OLLAMA_HOST,
+        port: OLLAMA_PORT,
+        path: '/api/chat',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let buffer = '';
+        let settled = false;
+
+        res.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const json = JSON.parse(line);
+              if (json.message?.thinking) {
+                mainWindow.webContents.send('ai:thinking-chunk', tabId, json.message.thinking);
+              }
+              if (json.message?.content) {
+                text += json.message.content;
+                mainWindow.webContents.send('ai:chunk', tabId, json.message.content);
+              }
+              if (Array.isArray(json.message?.tool_calls)) {
+                for (const tc of json.message.tool_calls) {
+                  if (tc?.function?.name) toolCalls.push(tc as ToolCall);
+                }
+              }
+              if (json.done && !settled) {
+                settled = true;
+                metrics = {
+                  totalDuration: json.total_duration || 0,
+                  loadDuration: json.load_duration || 0,
+                  promptEvalCount: json.prompt_eval_count || 0,
+                  promptEvalDuration: json.prompt_eval_duration || 0,
+                  evalCount: json.eval_count || 0,
+                  evalDuration: json.eval_duration || 0,
+                };
+                resolve({ text, toolCalls, metrics });
+              }
+            } catch {
+              // Incomplete JSON line — wait for next chunk
+            }
+          }
+        });
+
+        res.on('end', () => {
+          if (!settled) {
+            settled = true;
+            resolve({ text, toolCalls, metrics });
+          }
+        });
+      },
+    );
+
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+async function queryChatOllama(tabId: string, prompt: string): Promise<void> {
   const config = resolveConfig();
   const model = config.model;
   const tab = tabs.get(tabId);
@@ -738,6 +876,7 @@ function queryChatOllama(tabId: string, prompt: string): void {
   }
 
   const history = tab?.conversationHistory ?? [];
+  const rollbackLength = history.length;
   history.push({ role: 'user', content: prompt });
 
   const maxHistory = tab?.type === 'chat' ? MAX_CHAT_HISTORY_MESSAGES : MAX_HISTORY_MESSAGES;
@@ -745,99 +884,57 @@ function queryChatOllama(tabId: string, prompt: string): void {
     history.shift();
   }
 
-  // Chat tabs: no system prompt — raw user/assistant conversation only.
-  // The user interacts naturally with the model without any injected instructions.
-  const messages = [...history];
+  const useTools = config.chat.toolsEnabled && await modelSupportsTools(model);
 
-  // Free-form text with thinking support (think: true enables Ollama's
-  // dedicated message.thinking field for reasoning models)
-  const body = JSON.stringify({ model, messages, stream: true, think: true });
+  try {
+    let lastMetrics: Record<string, number> | null = null;
 
-  let currentAssistantResponse = '';
-  let currentThinkingResponse = '';
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const messages: ChatMessage[] = useTools
+        ? [{ role: 'system', content: buildChatSystemPrompt() }, ...history]
+        : [...history];
 
-  const req = http.request(
-    {
-      hostname: OLLAMA_HOST,
-      port: OLLAMA_PORT,
-      path: '/api/chat',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    },
-    (res) => {
-      let buffer = '';
-      let doneSent = false;
+      const result = await streamOneRound(tabId, model, messages, useTools);
+      lastMetrics = result.metrics;
 
-      res.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const json = JSON.parse(line);
-            // Thinking tokens come in message.thinking (separate from content)
-            if (json.message?.thinking) {
-              currentThinkingResponse += json.message.thinking;
-              mainWindow.webContents.send('ai:thinking-chunk', tabId, json.message.thinking);
-            }
-            if (json.message?.content) {
-              currentAssistantResponse += json.message.content;
-              mainWindow.webContents.send('ai:chunk', tabId, json.message.content);
-            }
-            if (json.done && !doneSent) {
-              doneSent = true;
-              if (currentAssistantResponse || currentThinkingResponse) {
-                history.push({ role: 'assistant', content: currentAssistantResponse });
-              }
-              // Send metrics from the done chunk
-              const metrics = {
-                totalDuration: json.total_duration || 0,
-                loadDuration: json.load_duration || 0,
-                promptEvalCount: json.prompt_eval_count || 0,
-                promptEvalDuration: json.prompt_eval_duration || 0,
-                evalCount: json.eval_count || 0,
-                evalDuration: json.eval_duration || 0,
-              };
-              mainWindow.webContents.send('ai:done', tabId, metrics);
-            }
-          } catch {
-            // Incomplete JSON line — will be completed in the next chunk
-          }
+      if (result.toolCalls.length === 0) {
+        if (result.text) {
+          history.push({ role: 'assistant', content: result.text });
         }
+        mainWindow.webContents.send('ai:done', tabId, result.metrics);
+        return;
+      }
+
+      // Persist the assistant turn (including tool_calls) so the model sees its own request on the next turn
+      history.push({
+        role: 'assistant',
+        content: result.text,
+        tool_calls: result.toolCalls,
       });
 
-      res.on('end', () => {
-        if (!doneSent) {
-          doneSent = true;
-          if (currentAssistantResponse || currentThinkingResponse) {
-            history.push({ role: 'assistant', content: currentAssistantResponse });
-          }
-          mainWindow.webContents.send('ai:done', tabId, null);
-        }
-      });
-    },
-  );
-
-  req.on('error', (err: Error) => {
-    const lastIdx = history.length - 1;
-    if (lastIdx >= 0 && history[lastIdx].role === 'user') {
-      history.pop();
+      // Execute each tool and append its result to history
+      for (const call of result.toolCalls) {
+        const name = call.function?.name || 'unknown';
+        const args = (call.function?.arguments || {}) as Record<string, unknown>;
+        mainWindow.webContents.send('ai:tool-call', tabId, name, args);
+        const toolResult = await executeTool(name, args);
+        history.push({ role: 'tool', content: toolResult, tool_name: name });
+        const preview = toolResult.length > 300 ? toolResult.slice(0, 300) + '…' : toolResult;
+        mainWindow.webContents.send('ai:tool-result', tabId, name, preview);
+      }
     }
 
-    const message =
-      err.message.includes('ECONNREFUSED')
-        ? `Cannot connect to Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}. Is Ollama running?`
-        : err.message;
+    // Safety cap reached — surface as a synthetic tool-result and close out
+    mainWindow.webContents.send('ai:tool-result', tabId, 'system', '[aborted: max tool rounds reached]');
+    mainWindow.webContents.send('ai:done', tabId, lastMetrics);
+  } catch (err) {
+    // Roll back to pre-query state so the user can retry cleanly
+    history.length = rollbackLength;
+    const message = err instanceof Error && err.message.includes('ECONNREFUSED')
+      ? `Cannot connect to Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}. Is Ollama running?`
+      : err instanceof Error ? err.message : 'Unknown error';
     mainWindow.webContents.send('ai:error', tabId, message);
-  });
-
-  req.write(body);
-  req.end();
+  }
 }
 
 // --- Model info (POST /api/show) for capabilities and context ---

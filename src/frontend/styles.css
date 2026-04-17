@@ -447,6 +447,46 @@ body {
   margin-bottom: 2px;
 }
 
+/* Tool call / result blocks (agent mode) */
+.chat-tool-call {
+  background: #0e1a2a;
+  border-left: 3px solid var(--accent, #00b4d8);
+  padding: 6px 10px;
+  margin: 8px 0 2px 0;
+  border-radius: 3px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.chat-tool-call-header {
+  color: var(--accent, #00b4d8);
+  font-weight: bold;
+}
+
+.chat-tool-call-args {
+  color: #9aa4b8;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-top: 2px;
+}
+
+.chat-tool-result {
+  background: #0e1a2a;
+  border-left: 3px solid #3a5a7c;
+  padding: 6px 10px;
+  margin: 0 0 8px 0;
+  border-radius: 3px;
+  color: #b8c0d0;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.8em;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 /* Streaming indicator */
 .chat-streaming-cursor {
   display: inline-block;

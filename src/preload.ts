@@ -43,6 +43,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onAiThinkingChunk: (callback: (tabId: string, chunk: string) => void) => {
     ipcRenderer.on('ai:thinking-chunk', (_event, tabId, chunk) => callback(tabId, chunk));
   },
+  onAiToolCall: (callback: (tabId: string, name: string, args: Record<string, unknown>) => void) => {
+    ipcRenderer.on('ai:tool-call', (_event, tabId, name, args) => callback(tabId, name, args));
+  },
+  onAiToolResult: (callback: (tabId: string, name: string, result: string) => void) => {
+    ipcRenderer.on('ai:tool-result', (_event, tabId, name, result) => callback(tabId, name, result));
+  },
   onAiDone: (callback: (tabId: string, metrics?: Record<string, number> | null) => void) => {
     ipcRenderer.on('ai:done', (_event, tabId, metrics) => callback(tabId, metrics));
   },

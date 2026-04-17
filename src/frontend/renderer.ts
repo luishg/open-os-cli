@@ -67,6 +67,8 @@ declare global {
       chatQuery: (tabId: string, prompt: string) => void;
       onAiChunk: (callback: (tabId: string, chunk: string) => void) => void;
       onAiThinkingChunk: (callback: (tabId: string, chunk: string) => void) => void;
+      onAiToolCall: (callback: (tabId: string, name: string, args: Record<string, unknown>) => void) => void;
+      onAiToolResult: (callback: (tabId: string, name: string, result: string) => void) => void;
       onAiDone: (callback: (tabId: string, metrics?: Record<string, number> | null) => void) => void;
       onAiError: (callback: (tabId: string, error: string) => void) => void;
       // Filesystem tab-completion (tab-aware)
@@ -201,6 +203,12 @@ function formatCommandPreview(cmd: string): string {
 
 type InlineState = 'idle' | 'input' | 'streaming' | 'approval';
 
+type ChatSegment =
+  | { type: 'text'; content: string }
+  | { type: 'thinking'; content: string }
+  | { type: 'tool-call'; name: string; args: Record<string, unknown> }
+  | { type: 'tool-result'; name: string; content: string };
+
 interface TabInstance {
   id: string;
   type: 'terminal' | 'chat';
@@ -214,9 +222,7 @@ interface TabInstance {
   chatSendBtn: HTMLButtonElement | null;
   chatModelInfoEl: HTMLDivElement | null;
   chatStreamEl: HTMLDivElement | null;
-  chatStreamBuffer: string;
-  chatThinkingBuffer: string;
-  chatInThinking: boolean;
+  chatSegments: ChatSegment[];
   chatModelContextLength: number;
   // Per-tab inline AI state
   inlineState: InlineState;
@@ -314,9 +320,7 @@ function createTabInstance(): TabInstance {
     chatSendBtn: null,
     chatModelInfoEl: null,
     chatStreamEl: null,
-    chatStreamBuffer: '',
-    chatThinkingBuffer: '',
-    chatInThinking: false,
+    chatSegments: [],
     chatModelContextLength: 0,
     inlineState: 'idle',
     inlineInputBuffer: '',
@@ -511,52 +515,104 @@ function renderMarkdownInline(text: string): string {
   return html;
 }
 
-// --- Render a streaming assistant message into its DOM element ---
-// Thinking content comes from ai:thinking-chunk (Ollama's dedicated field).
-// Response content comes from ai:chunk. Both use separate buffers.
-// Fallback: if no thinking chunks received, check response buffer for
-// raw <think>...</think> tags (some older models embed them directly).
+// --- Render segments (text, thinking, tool-call, tool-result) into HTML ---
+//
+// Segments are appended by the streaming IPC handlers in the order they arrive.
+// This lets tool calls appear inline between text chunks, preserving the
+// "assistant thought → used tool → kept talking" flow as a single bubble.
+//
+// Fallback: for older models that emit raw <think>...</think> instead of using
+// Ollama's dedicated thinking field, we detect and extract those tags out of
+// text segments at render time.
 
-function getThinkingAndResponse(tab: TabInstance): { thinking: string; response: string } {
-  // Primary: Ollama's dedicated thinking field via chatThinkingBuffer
-  if (tab.chatThinkingBuffer) {
-    return { thinking: tab.chatThinkingBuffer, response: tab.chatStreamBuffer };
+function renderSegmentsHtml(segments: ChatSegment[], isStreaming: boolean): string {
+  let html = '';
+  let hasAnyContent = false;
+
+  for (const seg of segments) {
+    if (seg.type === 'thinking') {
+      if (!seg.content) continue;
+      html += `<div class="chat-thinking-label">${isStreaming ? 'Thinking...' : 'Thinking'}</div>`;
+      html += `<div class="chat-thinking">${escapeHtml(seg.content)}</div>`;
+      hasAnyContent = true;
+    } else if (seg.type === 'text') {
+      if (!seg.content) continue;
+      // Fallback: older models embed <think>...</think> in the text stream
+      const { thinking, rest } = extractLegacyThink(seg.content);
+      if (thinking) {
+        html += `<div class="chat-thinking-label">${isStreaming ? 'Thinking...' : 'Thinking'}</div>`;
+        html += `<div class="chat-thinking">${escapeHtml(thinking)}</div>`;
+        hasAnyContent = true;
+      }
+      if (rest) {
+        html += renderMarkdown(rest);
+        hasAnyContent = true;
+      }
+    } else if (seg.type === 'tool-call') {
+      const argsStr = formatToolArgs(seg.args);
+      html += `<div class="chat-tool-call">` +
+        `<div class="chat-tool-call-header">🔧 ${escapeHtml(seg.name)}</div>` +
+        (argsStr ? `<div class="chat-tool-call-args">${escapeHtml(argsStr)}</div>` : '') +
+        `</div>`;
+      hasAnyContent = true;
+    } else if (seg.type === 'tool-result') {
+      html += `<div class="chat-tool-result">${escapeHtml(seg.content)}</div>`;
+      hasAnyContent = true;
+    }
   }
-  // Fallback: parse raw <think> tags in the response buffer
-  const buf = tab.chatStreamBuffer;
+
+  if (!hasAnyContent && !isStreaming) {
+    html = '<em style="color:#555e70">(empty response)</em>';
+  }
+  return html;
+}
+
+function extractLegacyThink(buf: string): { thinking: string; rest: string } {
   const thinkStart = buf.indexOf('<think>');
-  if (thinkStart === -1) return { thinking: '', response: buf };
+  if (thinkStart === -1) return { thinking: '', rest: buf };
   const thinkEnd = buf.indexOf('</think>');
   if (thinkEnd === -1) {
-    return { thinking: buf.slice(thinkStart + 7), response: '' };
+    return { thinking: buf.slice(thinkStart + 7), rest: '' };
   }
   return {
     thinking: buf.slice(thinkStart + 7, thinkEnd),
-    response: buf.slice(thinkEnd + 8).trimStart(),
+    rest: (buf.slice(0, thinkStart) + buf.slice(thinkEnd + 8)).trimStart(),
   };
+}
+
+function formatToolArgs(args: Record<string, unknown>): string {
+  if (!args) return '';
+  const entries = Object.entries(args);
+  if (entries.length === 0) return '';
+  return entries.map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n');
+}
+
+function appendTextChunk(tab: TabInstance, chunk: string): void {
+  const last = tab.chatSegments[tab.chatSegments.length - 1];
+  if (last && last.type === 'text') {
+    last.content += chunk;
+  } else {
+    tab.chatSegments.push({ type: 'text', content: chunk });
+  }
+}
+
+function appendThinkingChunk(tab: TabInstance, chunk: string): void {
+  const last = tab.chatSegments[tab.chatSegments.length - 1];
+  if (last && last.type === 'thinking') {
+    last.content += chunk;
+  } else {
+    tab.chatSegments.push({ type: 'thinking', content: chunk });
+  }
 }
 
 function renderStreamingMessage(tab: TabInstance): void {
   if (!tab.chatStreamEl) return;
 
-  const { thinking, response } = getThinkingAndResponse(tab);
-  let html = '';
-
-  if (thinking) {
-    html += `<div class="chat-thinking-label">Thinking...</div>`;
-    html += `<div class="chat-thinking">${escapeHtml(thinking)}</div>`;
-  }
-
-  if (response) {
-    html += renderMarkdown(response);
-  }
-
-  // Streaming cursor
+  let html = renderSegmentsHtml(tab.chatSegments, true);
   html += '<span class="chat-streaming-cursor"></span>';
 
   tab.chatStreamEl.innerHTML = html;
 
-  // Auto-scroll
   if (tab.chatMessagesEl) {
     tab.chatMessagesEl.scrollTop = tab.chatMessagesEl.scrollHeight;
   }
@@ -567,19 +623,7 @@ function renderStreamingMessage(tab: TabInstance): void {
 function finalizeStreamingMessage(tab: TabInstance, metrics?: Record<string, number> | null): void {
   if (!tab.chatStreamEl) return;
 
-  const { thinking, response } = getThinkingAndResponse(tab);
-  let html = '';
-
-  if (thinking) {
-    html += `<div class="chat-thinking-label">Thinking</div>`;
-    html += `<div class="chat-thinking">${escapeHtml(thinking)}</div>`;
-  }
-
-  if (response) {
-    html += renderMarkdown(response);
-  } else if (!thinking) {
-    html += '<em style="color:#555e70">(empty response)</em>';
-  }
+  let html = renderSegmentsHtml(tab.chatSegments, false);
 
   // Response metrics
   if (metrics && metrics.evalCount > 0) {
@@ -637,9 +681,7 @@ function sendChatMessage(tab: TabInstance): void {
   tab.isStreaming = true;
   tab.chatInputEl.disabled = true;
   tab.chatSendBtn.disabled = true;
-  tab.chatStreamBuffer = '';
-  tab.chatThinkingBuffer = '';
-  tab.chatInThinking = false;
+  tab.chatSegments = [];
   tab.aiQuerySource = 'chat' as any;
 
   // Add user message to the UI
@@ -752,9 +794,7 @@ function createChatTabInstance(): TabInstance {
     chatSendBtn: sendBtn,
     chatModelInfoEl: modelInfoEl,
     chatStreamEl: null,
-    chatStreamBuffer: '',
-    chatThinkingBuffer: '',
-    chatInThinking: false,
+    chatSegments: [],
     chatModelContextLength: 0,
     inlineState: 'idle',
     inlineInputBuffer: '',
@@ -1708,8 +1748,7 @@ window.electronAPI.onAiThinkingChunk((tabId, chunk) => {
   if (!tab) return;
 
   if ((tab.aiQuerySource as string) === 'chat') {
-    tab.chatThinkingBuffer += chunk;
-    tab.chatInThinking = true;
+    appendThinkingChunk(tab, chunk);
     renderStreamingMessage(tab);
   }
 });
@@ -1719,12 +1758,27 @@ window.electronAPI.onAiChunk((tabId, chunk) => {
   if (!tab) return;
 
   if ((tab.aiQuerySource as string) === 'chat') {
-    tab.chatInThinking = false;
-    tab.chatStreamBuffer += chunk;
+    appendTextChunk(tab, chunk);
     renderStreamingMessage(tab);
   } else if (tab.aiQuerySource === 'inline') {
     tab.inlineResponseBuffer += chunk;
   }
+});
+
+window.electronAPI.onAiToolCall((tabId, name, args) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+  if ((tab.aiQuerySource as string) !== 'chat') return;
+  tab.chatSegments.push({ type: 'tool-call', name, args: args || {} });
+  renderStreamingMessage(tab);
+});
+
+window.electronAPI.onAiToolResult((tabId, name, result) => {
+  const tab = tabInstances.get(tabId);
+  if (!tab) return;
+  if ((tab.aiQuerySource as string) !== 'chat') return;
+  tab.chatSegments.push({ type: 'tool-result', name, content: result });
+  renderStreamingMessage(tab);
 });
 
 window.electronAPI.onAiDone((tabId, metrics) => {
@@ -1735,9 +1789,7 @@ window.electronAPI.onAiDone((tabId, metrics) => {
     finalizeStreamingMessage(tab, metrics);
     tab.isStreaming = false;
     tab.chatStreamEl = null;
-    tab.chatStreamBuffer = '';
-    tab.chatThinkingBuffer = '';
-    tab.chatInThinking = false;
+    tab.chatSegments = [];
     tab.aiQuerySource = null;
     // Re-enable input
     if (tab.chatInputEl) {
@@ -1789,8 +1841,7 @@ window.electronAPI.onAiError((tabId, error) => {
     }
     tab.isStreaming = false;
     tab.chatStreamEl = null;
-    tab.chatStreamBuffer = '';
-    tab.chatThinkingBuffer = '';
+    tab.chatSegments = [];
     tab.aiQuerySource = null;
     if (tab.chatInputEl) {
       tab.chatInputEl.disabled = false;

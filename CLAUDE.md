@@ -352,3 +352,57 @@ When writing a command to the PTY, all `\n` are replaced with `\r` (`cmd.replace
 3. `EOF\r` → heredoc closes, command executes
 
 This conversion applies to inline mode (Insert / Run).
+
+### Chat agent mode (web tools)
+
+Chat tabs turn into a basic agent when the configured model has Ollama capability `tools`. The implementation is intentionally minimal — **zero new dependencies** (only Node.js `http`/`https` + regex), and contained in a single module so it can be swapped out without touching the chat flow.
+
+**What the agent can do:** two tools, both read-only.
+
+| Tool | Implementation | Contract |
+|---|---|---|
+| `web_search(query)` | `src/tools/web.ts` — `webSearch()` | GET `https://html.duckduckgo.com/html/?q=…`, regex-parses `result__a` + `result__snippet`, decodes the `uddg` redirect param, returns top 5 formatted results (≤2 KB). |
+| `fetch_url(url)` | `src/tools/web.ts` — `fetchUrl()` | GETs an http/https URL with a Chrome UA, follows ≤3 redirects, 10s timeout, 1 MB body cap, accepts only `text/html`/`text/plain`, strips `<script>/<style>/<noscript>/<!--comments-->/tags`, decodes entities, truncates to 5000 chars. Refuses internal hosts (`localhost`, `127/8`, `10/8`, `192.168/16`, `169.254/16`, `172.16/12`, IPv6 loopback/link-local/ULA). |
+
+Both funnel through `executeTool(name, args)` which wraps errors — a failure becomes `ERROR: …` in the tool-result content, and the model decides how to handle it (it usually apologizes and moves on, no crash).
+
+**Tool schemas** (`TOOL_SCHEMAS` in `tools/web.ts`) follow the OpenAI-style `{type: 'function', function: {name, description, parameters}}` shape that Ollama accepts natively. Passed to `/api/chat` as the top-level `tools` array.
+
+**Agent loop** lives in `main.ts` — `queryChatOllama()` is now `async` and iterates up to `MAX_TOOL_ROUNDS = 4`. Each iteration calls `streamOneRound()`, which does one streaming HTTP request to `/api/chat` and returns `{text, toolCalls, metrics}`. The loop:
+
+1. Pushes `{role: 'user', content: prompt}` to `tab.conversationHistory` (remembers `rollbackLength` for error recovery).
+2. Per round: prepends the chat system prompt (only if tools are active), calls `streamOneRound()`, emits `ai:chunk` / `ai:thinking-chunk` as tokens arrive.
+3. If the round returned no `tool_calls`: pushes the final assistant message, emits `ai:done` with metrics, returns.
+4. Otherwise: pushes `{role: 'assistant', content, tool_calls}` so the model sees its own request on the next turn. For each call, emits `ai:tool-call`, runs `executeTool()`, pushes `{role: 'tool', content, tool_name}`, emits `ai:tool-result` (with content truncated to 300 chars for the UI — full text stays in history).
+5. If round 4 still has tool calls: emits a synthetic `ai:tool-result` with `[aborted: max tool rounds reached]` + `ai:done`.
+6. On any exception: `history.length = rollbackLength` rolls history back to pre-query state (so retry is clean), then emits `ai:error`.
+
+**Capability detection** — `modelSupportsTools(model)` memoizes per-model via `toolCapabilityCache: Map<string, boolean>`, populated from `showOllamaModel()`'s `capabilities` array. If the model lacks `tools`, we send the request without the `tools` field and skip the system prompt — behavior is identical to pre-0.7.0 chat.
+
+**System prompt** — `buildChatSystemPrompt()`. Injected **only when tools are active**. Instructs the model to use tools only for info outside its training data and to cite URLs. Chat tabs without tools still send no system prompt (unchanged behavior).
+
+**Config flag** — `chat-tools-enabled` in `config.conf` (default `true`). Resolved into `ResolvedConfig.chat.toolsEnabled`. Setting it to `false` skips the capability check and the `tools` payload entirely.
+
+**IPC channels added:**
+- `ai:tool-call` (main → renderer) — `(tabId, name: string, args: Record<string, unknown>)` fires when the agent is about to run a tool.
+- `ai:tool-result` (main → renderer) — `(tabId, name: string, result: string)` fires with a ≤300-char preview after the tool returns.
+
+Existing `ai:chunk`, `ai:thinking-chunk`, `ai:done`, `ai:error` are unchanged. `ai:done` is emitted **only once per user query** — in the final round that returns no tool_calls — with that round's metrics.
+
+**Renderer rendering** — `TabInstance` now has `chatSegments: ChatSegment[]` where:
+
+```ts
+type ChatSegment =
+  | { type: 'text'; content: string }
+  | { type: 'thinking'; content: string }
+  | { type: 'tool-call'; name: string; args: Record<string, unknown> }
+  | { type: 'tool-result'; name: string; content: string };
+```
+
+Segments are appended in arrival order by the IPC handlers (`appendTextChunk`, `appendThinkingChunk`, and direct `push` for tool segments). `renderSegmentsHtml()` walks them and builds the assistant bubble — text via `renderMarkdown()`, thinking via `.chat-thinking`, tool calls via `.chat-tool-call`, tool results via `.chat-tool-result`. This is why tool-call blocks appear **inline** between text paragraphs instead of as separate messages — the whole agent turn is one bubble.
+
+The legacy `<think>...</think>` fallback for older reasoning models is preserved inside text segments by `extractLegacyThink()` at render time.
+
+**CSS** — `.chat-tool-call` (accent left border, 🔧 header, monospace), `.chat-tool-call-args` (key: value pairs), `.chat-tool-result` (darker border, `max-height: 200px` with overflow scroll so long results don't blow up the bubble). All in `src/frontend/styles.css` right after `.chat-thinking`.
+
+**Fragility note** — DuckDuckGo HTML endpoint is the most fragile surface here. If their markup changes and the regex breaks, symptoms will be empty `web_search` results (the model will say "I found nothing" instead of crashing). Swap is local: rewrite `webSearch()` to hit a SearXNG instance (`/search?format=json`) — no other code changes needed since the rest of the pipeline is tool-agnostic.
